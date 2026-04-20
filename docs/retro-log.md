@@ -134,6 +134,12 @@ logosAPI = api;
 
 ---
 
+## win 2026-04-20 — full decentralised backup loop closed
+
+Notes → Stash → Beacon (LEZ inscription). Zone-seq init required `set_channel_id` after `get_channel_id`; C++ signals don't bridge to QML across IPC; ghost `logos_host` instances steal IPC calls from live keycard.
+
+---
+
 **Known gaps for follow-up:**
 - Retry queue for failed inscriptions (node down at inscription time)
 - Keycard integration once Ed25519 derivation lands in keycard-basecamp
