@@ -1,0 +1,13 @@
+{
+  "name": "beacon_ui",
+  "version": "1.0.0",
+  "description": "Beacon UI — on-chain CID inscription",
+  "author": "Beacon",
+  "type": "ui_qml",
+  "pluginType": "qml",
+  "view": "Main.qml",
+  "dependencies": ["logos_beacon", "liblogos_zone_sequencer_module"],
+  "category": "storage",
+  "capabilities": [],
+  "icon": "icons/Beacon_sidebar.png"
+}

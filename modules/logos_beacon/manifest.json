@@ -1,0 +1,16 @@
+{
+  "author": "Beacon",
+  "category": "storage",
+  "dependencies": [],
+  "description": "Beacon — on-chain CID inscription",
+  "icon": "",
+  "main": {
+    "linux-amd64":      "beacon_plugin.so",
+    "linux-amd64-dev":  "beacon_plugin.so",
+    "linux-x86_64-dev": "beacon_plugin.so"
+  },
+  "manifestVersion": "0.2.0",
+  "name": "logos_beacon",
+  "type": "core",
+  "version": "1.0.0"
+}

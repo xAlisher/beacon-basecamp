@@ -1,0 +1,12 @@
+{
+  "name": "logos_beacon",
+  "version": "1.0.0",
+  "description": "Beacon — on-chain CID inscription",
+  "author": "Beacon",
+  "type": "core",
+  "main": "beacon_plugin",
+  "dependencies": [],
+  "category": "storage",
+  "capabilities": [],
+  "icon": ""
+}

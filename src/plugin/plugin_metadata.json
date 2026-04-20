@@ -1,0 +1,10 @@
+{
+  "author": "Beacon",
+  "category": "storage",
+  "dependencies": [],
+  "description": "Beacon — on-chain CID inscription",
+  "main": "beacon_plugin",
+  "name": "logos_beacon",
+  "type": "core",
+  "version": "1.0.0"
+}
