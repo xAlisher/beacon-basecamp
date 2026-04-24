@@ -7,12 +7,11 @@
 #include <QDateTime>
 #include <QFile>
 #include <QDir>
-#include <QRandomGenerator>
-#include <QFileDevice>
 
 // ── QSettings key prefix ──────────────────────────────────────────────────────
-static constexpr const char* kNodeUrlKey   = "beacon/nodeUrl";
-static constexpr const char* kWatchStashKey = "beacon/watchStash";
+static constexpr const char* kNodeUrlKey      = "beacon/nodeUrl";
+static constexpr const char* kWatchStashKey   = "beacon/watchStash";
+static constexpr const char* kChannelLabelKey = "beacon/channelLabel";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 QString BeaconPlugin::errorJson(const QString& msg)
@@ -51,39 +50,27 @@ void BeaconPlugin::initLogos(LogosAPI* api)
 
     QDir().mkpath(m_persistencePath);
 
-    ensureKey();
     loadLog();
 }
 
-// ── ensureKey ─────────────────────────────────────────────────────────────────
-// Generate a fresh Ed25519 seed (32 bytes) on first run; read it back on
-// subsequent runs. Stored as 64-char lowercase hex, chmod 0600.
-void BeaconPlugin::ensureKey()
+// ── setSigningKey ─────────────────────────────────────────────────────────────
+// Called from QML after keycardAuthComplete delivers the 32-byte domain key.
+// Replaces the old file-based ensureKey() — key now comes from hardware each session.
+QString BeaconPlugin::setSigningKey(const QString& hexKey)
 {
-    if (m_persistencePath.isEmpty())
-        return;
+    if (hexKey.length() != 64 || QByteArray::fromHex(hexKey.toUtf8()).size() != 32)
+        return errorJson(QStringLiteral("hexKey must be 64 hex chars (32 bytes)"));
 
-    QString keyPath = m_persistencePath + QStringLiteral("/beacon.key");
+    m_signingKeyHex = hexKey;
+    return okJson();
+}
 
-    if (!QFile::exists(keyPath)) {
-        // 8 × uint32 = 32 bytes of cryptographically secure randomness
-        QByteArray seed(32, Qt::Uninitialized);
-        QRandomGenerator::system()->fillRange(
-            reinterpret_cast<quint32*>(seed.data()), 8);
-
-        QFile f(keyPath);
-        if (f.open(QIODevice::WriteOnly)) {
-            f.write(seed.toHex());
-            f.close();
-            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        }
-    }
-
-    QFile f(keyPath);
-    if (f.open(QIODevice::ReadOnly)) {
-        m_signingKeyHex = QString::fromLatin1(f.readAll().trimmed());
-        f.close();
-    }
+// ── clearSigningKey ───────────────────────────────────────────────────────────
+// Called from QML on card removal or auth restart.
+QString BeaconPlugin::clearSigningKey()
+{
+    m_signingKeyHex.clear();
+    return okJson();
 }
 
 // ── getBeaconConfig ───────────────────────────────────────────────────────────
@@ -96,6 +83,8 @@ QString BeaconPlugin::getBeaconConfig() const
                                                     QStringLiteral("http://127.0.0.1:8080")).toString();
     o[QStringLiteral("watchStash")]      = s.value(QLatin1String(kWatchStashKey), true).toBool();
     o[QStringLiteral("persistencePath")] = m_persistencePath;
+    o[QStringLiteral("channelLabel")]    = s.value(QLatin1String(kChannelLabelKey),
+                                                    QStringLiteral("My Beacon")).toString();
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
 
@@ -114,6 +103,14 @@ QString BeaconPlugin::setWatchStash(bool enabled)
 {
     QSettings s;
     s.setValue(QLatin1String(kWatchStashKey), enabled);
+    return okJson();
+}
+
+// ── setChannelLabel ───────────────────────────────────────────────────────────
+QString BeaconPlugin::setChannelLabel(const QString& label)
+{
+    QSettings s;
+    s.setValue(QLatin1String(kChannelLabelKey), label.trimmed());
     return okJson();
 }
 

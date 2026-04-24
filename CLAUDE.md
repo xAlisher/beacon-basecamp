@@ -145,6 +145,37 @@ When `keycard-basecamp` exposes Ed25519 key derivation:
 
 ---
 
+## Issue #12 — Add `source` field to `cid_pin` payload
+
+**Goal:** Let subscribers (Cord, future modules) know which Basecamp module a CID originated from.
+
+**Change:** Add a `source` field to the `cid_pin` inscription payload:
+
+```json
+{"v":1, "type":"cid_pin", "cid":"baf...", "label":"...", "source":"logos_notes", "ts":1234567890}
+```
+
+**Where `source` comes from:**
+- Stash calls `pinCid(cid, label)` — extend to `pinCid(cid, label, source)`
+- `source` is the calling module name, e.g. `"logos_notes"`, `"stash"`, `"logos_keycard"`
+- Default to `""` if not provided (backward compatible)
+
+**C++ change:** `pinCid(cid, label, source = "")` — store `source` in the log entry and include it in the payload passed back to QML.
+
+**QML change:** include `source` in the JSON payload constructed in `inscribeCid()`:
+```javascript
+var payload = JSON.stringify({
+    v: 1, type: "cid_pin", cid: cid, label: label,
+    source: source || "", ts: Math.floor(Date.now() / 1000)
+})
+```
+
+**Cord benefit:** `dispatchMessage` can filter/route by `payload.source` — e.g. "show me only Notes backups from Alice's channel".
+
+**Blocked on:** Stash passing `source` when calling `pinCid`. Stash currently calls `pinCid(cid, label)` — needs a third argument once this is implemented.
+
+---
+
 ## Common Pitfalls (from stash/keycard lessons)
 
 - **`background: null` on TextEdit** — silent QML load failure. Only valid on TextField/TextArea.
@@ -199,3 +230,4 @@ beacon-basecamp/
 | 9 | UI | Inscription log panel | done |
 | 10 | Tests | Unit tests | done |
 | 11 | UI | Real-time log update on inscription confirm | pending |
+| 12 | Core | Add `source` field to `cid_pin` payload | pending |

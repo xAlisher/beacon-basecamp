@@ -36,9 +36,10 @@ private:
     }
 
 private slots:
-    // ── Key generation tests ──────────────────────────────────────────────────
+    // ── setSigningKey tests ───────────────────────────────────────────────────
+    // Key now comes from Keycard hardware each session — no file generated.
 
-    void testEnsureKeyCreatesFile()
+    void testSetSigningKeyValid()
     {
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
@@ -47,53 +48,68 @@ private slots:
         p.setProperty("instancePersistencePath", tmp.path());
         p.initLogos(nullptr);
 
-        QString keyPath = tmp.path() + "/beacon.key";
-        QVERIFY(QFile::exists(keyPath));
+        // Before setSigningKey: key is empty, beacon.key file not created
+        auto cfg0 = parseObj(p.getBeaconConfig());
+        QVERIFY(cfg0["signingKeyHex"].toString().isEmpty());
+        QVERIFY(!QFile::exists(tmp.path() + "/beacon.key"));
 
-        QFile f(keyPath);
-        QVERIFY(f.open(QIODevice::ReadOnly));
-        QByteArray content = f.readAll().trimmed();
-        f.close();
+        // Set a valid 32-byte key (64 hex chars)
+        const QString key =
+            "a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1";
+        auto r = parseObj(p.setSigningKey(key));
+        QVERIFY(!r.contains("error"));
+        QVERIFY(r["ok"].toBool());
 
-        // 64-char hex
-        QCOMPARE(content.length(), 64);
-        // All hex chars
-        QRegularExpression hexRe("^[0-9a-f]{64}$");
-        QVERIFY(hexRe.match(QString::fromLatin1(content)).hasMatch());
-
-        // Mode 0600
-        QFileDevice::Permissions perms = QFile::permissions(keyPath);
-        QVERIFY(perms & QFileDevice::ReadOwner);
-        QVERIFY(perms & QFileDevice::WriteOwner);
-        QVERIFY(!(perms & QFileDevice::ReadGroup));
-        QVERIFY(!(perms & QFileDevice::WriteGroup));
-        QVERIFY(!(perms & QFileDevice::ReadOther));
-        QVERIFY(!(perms & QFileDevice::WriteOther));
+        auto cfg = parseObj(p.getBeaconConfig());
+        QCOMPARE(cfg["signingKeyHex"].toString(), key);
     }
 
-    void testEnsureKeyIdempotent()
+    void testSetSigningKeyInvalid()
     {
         QTemporaryDir tmp;
         QVERIFY(tmp.isValid());
 
-        BeaconPlugin p1;
-        p1.setProperty("instancePersistencePath", tmp.path());
-        p1.initLogos(nullptr);
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
 
-        auto cfg1 = parseObj(p1.getBeaconConfig());
-        QString key1 = cfg1["signingKeyHex"].toString();
+        // Too short
+        auto r1 = parseObj(p.setSigningKey("abc123"));
+        QVERIFY(r1.contains("error"));
 
-        // Second plugin instance, same path
-        BeaconPlugin p2;
-        p2.setProperty("instancePersistencePath", tmp.path());
-        p2.initLogos(nullptr);
+        // 64 chars but non-hex → fromHex returns partial/empty → size != 32
+        auto r2 = parseObj(p.setSigningKey(QString(64, 'z')));
+        QVERIFY(r2.contains("error"));
 
-        auto cfg2 = parseObj(p2.getBeaconConfig());
-        QString key2 = cfg2["signingKeyHex"].toString();
+        // Key must remain empty after failed attempts
+        auto cfg = parseObj(p.getBeaconConfig());
+        QVERIFY(cfg["signingKeyHex"].toString().isEmpty());
 
-        // Same key — not regenerated
-        QCOMPARE(key1, key2);
-        QVERIFY(!key1.isEmpty());
+        // getStatus must report configured=false (guard stays closed)
+        auto st = parseObj(p.getStatus());
+        QCOMPARE(st["configured"].toBool(), false);
+    }
+
+    void testClearSigningKey()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        // Set a valid key
+        p.setSigningKey("a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1");
+        QVERIFY(parseObj(p.getStatus())["configured"].toBool());
+
+        // Clear (card removal / auth restart)
+        auto r = parseObj(p.clearSigningKey());
+        QVERIFY(r["ok"].toBool());
+
+        // Backend state reset: key empty, configured=false
+        QVERIFY(parseObj(p.getBeaconConfig())["signingKeyHex"].toString().isEmpty());
+        QCOMPARE(parseObj(p.getStatus())["configured"].toBool(), false);
     }
 
     // ── Config tests ──────────────────────────────────────────────────────────
@@ -113,7 +129,8 @@ private slots:
 
         auto cfg = parseObj(p.getBeaconConfig());
         QVERIFY(cfg.contains("signingKeyHex"));
-        QVERIFY(cfg["signingKeyHex"].toString().length() == 64);
+        // Key is empty on init — delivered by Keycard hardware at runtime
+        QVERIFY(cfg["signingKeyHex"].toString().isEmpty());
         QCOMPARE(cfg["nodeUrl"].toString(), QString("http://127.0.0.1:8080"));
         QCOMPARE(cfg["watchStash"].toBool(), true);
         QCOMPARE(cfg["persistencePath"].toString(), tmp.path());
@@ -251,6 +268,56 @@ private slots:
         QVERIFY(r.contains("error"));
     }
 
+    // ── Channel label tests ───────────────────────────────────────────────────
+
+    void testSetChannelLabelPersists()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        QSettings s;
+        s.remove("beacon");
+
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseObj(p.setChannelLabel("Alice's Notes"));
+        QVERIFY(r["ok"].toBool());
+
+        auto cfg = parseObj(p.getBeaconConfig());
+        QCOMPARE(cfg["channelLabel"].toString(), QString("Alice's Notes"));
+    }
+
+    void testGetBeaconConfigDefaultLabel()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        QSettings s;
+        s.remove("beacon");
+
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto cfg = parseObj(p.getBeaconConfig());
+        QCOMPARE(cfg["channelLabel"].toString(), QString("My Beacon"));
+    }
+
+    void testSetChannelLabelTrimmed()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        p.setChannelLabel("  trimmed  ");
+        auto cfg = parseObj(p.getBeaconConfig());
+        QCOMPARE(cfg["channelLabel"].toString(), QString("trimmed"));
+    }
+
     void testGetStatusCounts()
     {
         QTemporaryDir tmp;
@@ -267,10 +334,16 @@ private slots:
         p.confirmInscription(pin1["entryIndex"].toInt(), "id1", "ok");
         p.confirmInscription(pin2["entryIndex"].toInt(), "",    "error");
 
+        // Without a signing key, configured = false
+        auto st0 = parseObj(p.getStatus());
+        QCOMPARE(st0["configured"].toBool(), false);
+        QCOMPARE(st0["seenCids"].toInt(), 2);
+        QCOMPARE(st0["inscribedCids"].toInt(), 1);
+
+        // After key delivered by Keycard, configured = true
+        p.setSigningKey("a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1");
         auto st = parseObj(p.getStatus());
         QCOMPARE(st["configured"].toBool(), true);
-        QCOMPARE(st["seenCids"].toInt(), 2);
-        QCOMPARE(st["inscribedCids"].toInt(), 1);
     }
 };
 

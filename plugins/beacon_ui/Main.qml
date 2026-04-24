@@ -31,6 +31,13 @@ Item {
     property int  stashSeenCount: 0
     property bool pollBusy:       false
     property int  inscribedCount: 0
+    property string channelLabel:       "My Beacon"
+    property string broadcastStatus:    ""   // "" | "ok" | "error"
+
+    // ── Keycard auth state ────────────────────────────────────────────────────
+    property string keycardAuthId:      ""   // set after requestAuth succeeds
+    property string keycardAuthStatus:  ""   // "" | "pending" | "complete" | "rejected" | "error"
+    property bool   keycardConnected:   false // true only after auth complete + key delivered
 
     // ── Hidden clipboard helper ───────────────────────────────────────────────
     TextEdit {
@@ -53,6 +60,26 @@ Item {
             }
             return tmp
         } catch(e) { return null }
+    }
+
+    // ── Keycard auth request ──────────────────────────────────────────────────
+    // Queues a requestAuth for domain "bc:beacon". The keycard UI will surface it
+    // when the card is present. keycardAuthPollTimer polls checkAuthStatus until done.
+    function requestKeycardAuth() {
+        if (typeof logos === "undefined" || !logos.callModule) return
+        logos.callModule("logos_beacon", "clearSigningKey", [])
+        root.keycardConnected  = false
+        root.keycardAuthStatus = ""
+        var raw = logos.callModule("keycard", "requestAuth", ["bc:beacon", "logos_beacon"])
+        var r = callModuleParse(raw)
+        if (r && r.authId) {
+            root.keycardAuthId     = r.authId
+            root.keycardAuthStatus = "pending"
+            keycardAuthPollTimer.start()
+        } else {
+            root.keycardAuthStatus = "error"
+            reconnectTimer.start()
+        }
     }
 
     // ── Zone sequencer setup (called once at startup) ─────────────────────────
@@ -160,6 +187,40 @@ Item {
         root.pollBusy = false
     }
 
+    // ── Broadcast channel announce ────────────────────────────────────────────
+    function broadcastChannel() {
+        if (root.pollBusy) return
+        if (!root.zoneSeqReady || root.channelId === "") return
+        root.pollBusy = true
+        root.broadcastStatus = ""
+
+        // Save current label first
+        logos.callModule("logos_beacon", "setChannelLabel", [root.channelLabel])
+
+        var payload = JSON.stringify({
+            v:          1,
+            type:       "channel_announce",
+            module:     "logos_beacon",
+            channel_id: root.channelId,
+            label:      root.channelLabel,
+            ts:         Math.floor(Date.now() / 1000)
+        })
+
+        var pubRaw    = logos.callModule("liblogos_zone_sequencer_module",
+                                         "publish", [payload])
+        var pubResult = callModuleParse(pubRaw)
+
+        var isError = false
+        if (typeof pubResult === 'string') {
+            isError = pubResult.toLowerCase().startsWith("error") || pubResult.length === 0
+        } else if (pubResult && pubResult.error) {
+            isError = true
+        }
+
+        root.broadcastStatus = isError ? "error" : "ok"
+        root.pollBusy = false
+    }
+
     // ── Stash log polling ─────────────────────────────────────────────────────
     function extractCid(text) {
         var m = text.match(/\b(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-zA-Z0-9]{50,})\b/)
@@ -169,6 +230,7 @@ Item {
     function pollStash() {
         if (root.pollBusy) return
         if (!root.watchStash) return
+        if (!root.keycardConnected) return
         if (typeof logos === "undefined" || !logos.callModule) return
 
         root.pollBusy = true
@@ -231,14 +293,17 @@ Item {
         var cfg    = callModuleParse(cfgRaw)
         if (!cfg) return
 
-        root.signingKeyHex   = cfg.signingKeyHex  || ""
         root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
         root.watchStash      = cfg.watchStash !== false
         root.persistencePath = cfg.persistencePath || ""
+        root.channelLabel    = cfg.channelLabel    || "My Beacon"
 
-        nodeUrlInput.text = root.nodeUrl
+        nodeUrlInput.text       = root.nodeUrl
+        channelLabelInput.text  = root.channelLabel
 
-        configureZoneSeq()
+        // Key now comes from keycard — request auth on startup.
+        // configureZoneSeq() is called once auth completes (keycardAuthPollTimer).
+        requestKeycardAuth()
         refreshLog()
     }
 
@@ -246,7 +311,7 @@ Item {
     Timer {
         id: stashPollTimer
         interval: 10000
-        running:  root.watchStash
+        running:  root.watchStash && root.keycardConnected
         repeat:   true
         onTriggered: root.pollStash()
     }
@@ -256,6 +321,90 @@ Item {
         running:  true
         repeat:   true
         onTriggered: root.refreshLog()
+    }
+
+    // ── Keycard auth poll ─────────────────────────────────────────────────────
+    // Polls checkAuthStatus until the user approves (or rejects) on the keycard UI.
+    // On completion: delivers key to logos_beacon and configures zone sequencer.
+    Timer {
+        id: keycardAuthPollTimer
+        interval: 750
+        running: false
+        repeat: true
+        onTriggered: {
+            if (root.keycardAuthId === "") { stop(); return }
+            var raw = logos.callModule("keycard", "checkAuthStatus", [root.keycardAuthId])
+            var r = root.callModuleParse(raw)
+            if (!r) return
+            if (r.status === "complete") {
+                stop()
+                // Deliver key to beacon C++ — only mark connected if key accepted
+                var skRaw = logos.callModule("logos_beacon", "setSigningKey", [r.key])
+                var skResult = root.callModuleParse(skRaw)
+                if (!skResult || skResult.error) {
+                    // Key rejected by backend (malformed); retry after delay
+                    root.keycardAuthStatus = "error"
+                    reconnectTimer.start()
+                    return
+                }
+                root.signingKeyHex = r.key
+                // Configure zone sequencer
+                root.configureZoneSeq()
+                if (root.zoneSeqReady) {
+                    // Full success — auth complete and sequencer ready
+                    root.keycardAuthStatus = "complete"
+                    root.keycardConnected  = true
+                } else {
+                    // Key accepted but sequencer failed — surface error and retry
+                    root.keycardAuthStatus = "error"
+                    reconnectTimer.start()
+                }
+            } else if (r.status === "rejected" || r.status === "failed") {
+                stop()
+                root.keycardAuthStatus  = r.status
+                root.keycardConnected   = false
+                reconnectTimer.start()
+            }
+        }
+    }
+
+    // ── Reconnect after auth rejection / keycard not available ───────────────
+    // Single-shot: fires once after a rejection or requestAuth error, then
+    // re-queues a fresh auth request so the user can try again without reloading.
+    Timer {
+        id: reconnectTimer
+        interval: 10000
+        running:  false
+        repeat:   false
+        onTriggered: root.requestKeycardAuth()
+    }
+
+    // ── Card removal detection ────────────────────────────────────────────────
+    // While connected, polls keycard.getState() every 8s. If the card is no
+    // longer present (state != SESSION_ACTIVE), resets keycardConnected and
+    // re-queues a fresh auth request so Beacon resumes as soon as the card
+    // is reinserted and re-approved.
+    Timer {
+        id: cardCheckTimer
+        interval: 8000
+        running:  root.keycardConnected
+        repeat:   true
+        onTriggered: {
+            if (typeof logos === "undefined" || !logos.callModule) return
+            var raw = logos.callModule("keycard", "getState", [])
+            var r = root.callModuleParse(raw)
+            if (!r || r.state !== "SESSION_ACTIVE") {
+                // Clear backend signing key before any re-request
+                logos.callModule("logos_beacon", "clearSigningKey", [])
+                root.keycardConnected  = false
+                root.keycardAuthStatus = ""
+                root.keycardAuthId     = ""
+                root.signingKeyHex     = ""
+                root.zoneSeqReady      = false
+                root.channelId         = ""
+                root.requestKeycardAuth()
+            }
+        }
     }
 
     // ── Log model ─────────────────────────────────────────────────────────────
@@ -294,6 +443,28 @@ Item {
                     text: root.inscribedCount + " inscribed"
                     color: root.textSecondary
                     font.pixelSize: 12
+                }
+            }
+
+            // ── Keycard auth status banner ────────────────────────────────────
+            Rectangle {
+                visible: root.keycardAuthStatus !== "complete"
+                Layout.fillWidth: true
+                height: 30
+                radius: 4
+                color: root.keycardAuthStatus === "rejected" || root.keycardAuthStatus === "error"
+                       ? "#2A1515" : "#1A1A2A"
+                Layout.topMargin: 4
+
+                Text {
+                    anchors.centerIn: parent
+                    text: root.keycardAuthStatus === ""        ? "Requesting Keycard auth..." :
+                          root.keycardAuthStatus === "pending"  ? "Waiting for Keycard approval — open Keycard tab" :
+                          root.keycardAuthStatus === "rejected" ? "Keycard auth rejected — reload to retry" :
+                          root.keycardAuthStatus === "error"    ? "Keycard not available — key not loaded" : ""
+                    color: root.keycardAuthStatus === "rejected" || root.keycardAuthStatus === "error"
+                           ? root.errorRed : root.textSecondary
+                    font.pixelSize: 11
                 }
             }
 
@@ -421,6 +592,94 @@ Item {
                                     onClicked: root.copyToClipboard(root.channelId)
                                 }
                             }
+                        }
+                    }
+
+                    // Channel label + Broadcast row
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Text {
+                            text: "Channel Label"
+                            color: root.textSecondary
+                            font.pixelSize: 11
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 32
+                                color: root.bgSecondary
+                                radius: 4
+                                border.color: channelLabelInput.activeFocus
+                                              ? root.accent : root.borderColor
+                                border.width: 1
+
+                                Behavior on border.color { ColorAnimation { duration: 100 } }
+
+                                TextField {
+                                    id: channelLabelInput
+                                    anchors.fill: parent
+                                    anchors.margins: 1
+                                    color: root.textPrimary
+                                    font.pixelSize: 12
+                                    background: null
+                                    leftPadding: 8
+                                    placeholderText: "My Beacon"
+                                    placeholderTextColor: root.textMuted
+                                    text: root.channelLabel
+                                    onTextChanged: root.channelLabel = text
+                                }
+                            }
+
+                            Rectangle {
+                                width: 100; height: 32
+                                radius: 4
+                                color: broadcastArea.pressed      ? root.accentPressed
+                                     : broadcastArea.containsMouse ? root.accentHover
+                                     : (root.zoneSeqReady && root.channelId !== "")
+                                       ? root.accent : "#555555"
+                                opacity: (root.zoneSeqReady && root.channelId !== "") ? 1.0 : 0.6
+
+                                Behavior on color { ColorAnimation { duration: 100 } }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Broadcast"
+                                    color: "#FFFFFF"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+
+                                MouseArea {
+                                    id: broadcastArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    enabled: root.zoneSeqReady && root.channelId !== ""
+                                    onClicked: root.broadcastChannel()
+                                }
+
+                                ToolTip.visible: broadcastArea.containsMouse
+                                ToolTip.text: root.zoneSeqReady && root.channelId !== ""
+                                    ? "Inscribe channel_announce to your Beacon channel"
+                                    : "Zone sequencer not ready"
+                            }
+                        }
+
+                        // Broadcast result feedback
+                        Text {
+                            visible: root.broadcastStatus !== ""
+                            text: root.broadcastStatus === "ok"
+                                ? "✓ Channel announced on-chain"
+                                : "✗ Broadcast failed — check zone sequencer"
+                            color: root.broadcastStatus === "ok"
+                                ? root.successGreen : root.errorRed
+                            font.pixelSize: 11
+                            Layout.fillWidth: true
                         }
                     }
 

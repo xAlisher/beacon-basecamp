@@ -147,3 +147,9 @@ Notes → Stash → Beacon (LEZ inscription). Zone-seq init required `set_channe
 - configureZoneSeq() slow load: defer blocking zone_seq calls out of Component.onCompleted
 - Issue #11: Real-time log update on inscription confirm — implemented via direct logModel.setProperty in QML (signal bridge approach abandoned)
 - Issue #12 (logos-notes): Show beacon inscription events in notes activity log — when a note backup is inscribed, notes should append an activity entry: "beacon backup {name} with CID {cid} successfully inscribed to {channel} on LEZ, status: Confirmed". Requires beacon to either emit a cross-module event or notes to poll beacon's getInscriptionLog(). — currently the log row goes straight from absent → confirmed (pending state never shown in UI). Options: (a) append a pending row to logModel immediately in QML before calling publish, then update in-place on confirm; (b) emit a C++ `inscriptionConfirmed(int entryIndex, QString inscriptionId, QString status)` signal that QML listens to for targeted row updates without full refresh. Option (b) is cleaner — avoids full re-read on every inscription and allows showing the pending→ok transition live.
+
+## fail 2026-04-24
+Senty 403 on GitHub comment: beacon-basecamp PR #2 review could not be posted automatically (Resource not accessible by integration). Findings were returned inline instead.
+
+## fail 2026-04-24
+Senty 403 repeated on beacon-basecamp PR #2 round 2 comment. GitHub integration token lacks write access to xAlisher/beacon-basecamp. Findings delivered inline again.
