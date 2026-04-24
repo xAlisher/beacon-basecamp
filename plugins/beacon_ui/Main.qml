@@ -37,6 +37,7 @@ Item {
     // ── Keycard auth state ────────────────────────────────────────────────────
     property string keycardAuthId:      ""   // set after requestAuth succeeds
     property string keycardAuthStatus:  ""   // "" | "pending" | "complete" | "rejected" | "error"
+    property bool   keycardConnected:   false // true only after auth complete + key delivered
 
     // ── Hidden clipboard helper ───────────────────────────────────────────────
     TextEdit {
@@ -66,6 +67,8 @@ Item {
     // when the card is present. keycardAuthPollTimer polls checkAuthStatus until done.
     function requestKeycardAuth() {
         if (typeof logos === "undefined" || !logos.callModule) return
+        root.keycardConnected  = false
+        root.keycardAuthStatus = ""
         var raw = logos.callModule("keycard", "requestAuth", ["bc:beacon", "logos_beacon"])
         var r = callModuleParse(raw)
         if (r && r.authId) {
@@ -74,6 +77,7 @@ Item {
             keycardAuthPollTimer.start()
         } else {
             root.keycardAuthStatus = "error"
+            reconnectTimer.start()
         }
     }
 
@@ -225,6 +229,7 @@ Item {
     function pollStash() {
         if (root.pollBusy) return
         if (!root.watchStash) return
+        if (!root.keycardConnected) return
         if (typeof logos === "undefined" || !logos.callModule) return
 
         root.pollBusy = true
@@ -305,7 +310,7 @@ Item {
     Timer {
         id: stashPollTimer
         interval: 10000
-        running:  root.watchStash
+        running:  root.watchStash && root.keycardConnected
         repeat:   true
         onTriggered: root.pollStash()
     }
@@ -333,6 +338,7 @@ Item {
             if (r.status === "complete") {
                 stop()
                 root.keycardAuthStatus = "complete"
+                root.keycardConnected  = true
                 // Deliver key to beacon C++ (for getBeaconConfig / getStatus)
                 logos.callModule("logos_beacon", "setSigningKey", [r.key])
                 root.signingKeyHex = r.key
@@ -340,7 +346,46 @@ Item {
                 root.configureZoneSeq()
             } else if (r.status === "rejected" || r.status === "failed") {
                 stop()
-                root.keycardAuthStatus = r.status
+                root.keycardAuthStatus  = r.status
+                root.keycardConnected   = false
+                reconnectTimer.start()
+            }
+        }
+    }
+
+    // ── Reconnect after auth rejection / keycard not available ───────────────
+    // Single-shot: fires once after a rejection or requestAuth error, then
+    // re-queues a fresh auth request so the user can try again without reloading.
+    Timer {
+        id: reconnectTimer
+        interval: 10000
+        running:  false
+        repeat:   false
+        onTriggered: root.requestKeycardAuth()
+    }
+
+    // ── Card removal detection ────────────────────────────────────────────────
+    // While connected, polls keycard.getState() every 8s. If the card is no
+    // longer present (state != SESSION_ACTIVE), resets keycardConnected and
+    // re-queues a fresh auth request so Beacon resumes as soon as the card
+    // is reinserted and re-approved.
+    Timer {
+        id: cardCheckTimer
+        interval: 8000
+        running:  root.keycardConnected
+        repeat:   true
+        onTriggered: {
+            if (typeof logos === "undefined" || !logos.callModule) return
+            var raw = logos.callModule("keycard", "getState", [])
+            var r = root.callModuleParse(raw)
+            if (!r || r.state !== "SESSION_ACTIVE") {
+                root.keycardConnected  = false
+                root.keycardAuthStatus = ""
+                root.keycardAuthId     = ""
+                root.signingKeyHex     = ""
+                root.zoneSeqReady      = false
+                root.channelId         = ""
+                root.requestKeycardAuth()
             }
         }
     }
