@@ -56,6 +56,10 @@ public:
     // Returns {"ok":true} or {"error":"..."}
     Q_INVOKABLE QString setSigningKey(const QString& hexKey);
 
+    // Called from QML on card removal or auth restart — clears m_signingKeyHex.
+    // Returns {"ok":true}
+    Q_INVOKABLE QString clearSigningKey();
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
     void inscriptionConfirmed(int entryIndex, const QString& inscriptionId,

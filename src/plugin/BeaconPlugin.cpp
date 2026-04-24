@@ -65,6 +65,14 @@ QString BeaconPlugin::setSigningKey(const QString& hexKey)
     return okJson();
 }
 
+// ── clearSigningKey ───────────────────────────────────────────────────────────
+// Called from QML on card removal or auth restart.
+QString BeaconPlugin::clearSigningKey()
+{
+    m_signingKeyHex.clear();
+    return okJson();
+}
+
 // ── getBeaconConfig ───────────────────────────────────────────────────────────
 QString BeaconPlugin::getBeaconConfig() const
 {

@@ -67,6 +67,7 @@ Item {
     // when the card is present. keycardAuthPollTimer polls checkAuthStatus until done.
     function requestKeycardAuth() {
         if (typeof logos === "undefined" || !logos.callModule) return
+        logos.callModule("logos_beacon", "clearSigningKey", [])
         root.keycardConnected  = false
         root.keycardAuthStatus = ""
         var raw = logos.callModule("keycard", "requestAuth", ["bc:beacon", "logos_beacon"])
@@ -338,12 +339,20 @@ Item {
             if (r.status === "complete") {
                 stop()
                 root.keycardAuthStatus = "complete"
-                root.keycardConnected  = true
-                // Deliver key to beacon C++ (for getBeaconConfig / getStatus)
-                logos.callModule("logos_beacon", "setSigningKey", [r.key])
+                // Deliver key to beacon C++ — only mark connected if key accepted
+                var skRaw = logos.callModule("logos_beacon", "setSigningKey", [r.key])
+                var skResult = root.callModuleParse(skRaw)
+                if (!skResult || skResult.error) {
+                    // Key rejected by backend (malformed); retry after delay
+                    root.keycardAuthStatus = "error"
+                    reconnectTimer.start()
+                    return
+                }
                 root.signingKeyHex = r.key
-                // Now configure zone sequencer with the card-bound key
+                // Configure zone sequencer — keycardConnected set only if ready
                 root.configureZoneSeq()
+                if (root.zoneSeqReady)
+                    root.keycardConnected = true
             } else if (r.status === "rejected" || r.status === "failed") {
                 stop()
                 root.keycardAuthStatus  = r.status
@@ -379,6 +388,8 @@ Item {
             var raw = logos.callModule("keycard", "getState", [])
             var r = root.callModuleParse(raw)
             if (!r || r.state !== "SESSION_ACTIVE") {
+                // Clear backend signing key before any re-request
+                logos.callModule("logos_beacon", "clearSigningKey", [])
                 root.keycardConnected  = false
                 root.keycardAuthStatus = ""
                 root.keycardAuthId     = ""

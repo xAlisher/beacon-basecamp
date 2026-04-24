@@ -84,6 +84,32 @@ private slots:
         // Key must remain empty after failed attempts
         auto cfg = parseObj(p.getBeaconConfig());
         QVERIFY(cfg["signingKeyHex"].toString().isEmpty());
+
+        // getStatus must report configured=false (guard stays closed)
+        auto st = parseObj(p.getStatus());
+        QCOMPARE(st["configured"].toBool(), false);
+    }
+
+    void testClearSigningKey()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        // Set a valid key
+        p.setSigningKey("a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1");
+        QVERIFY(parseObj(p.getStatus())["configured"].toBool());
+
+        // Clear (card removal / auth restart)
+        auto r = parseObj(p.clearSigningKey());
+        QVERIFY(r["ok"].toBool());
+
+        // Backend state reset: key empty, configured=false
+        QVERIFY(parseObj(p.getBeaconConfig())["signingKeyHex"].toString().isEmpty());
+        QCOMPARE(parseObj(p.getStatus())["configured"].toBool(), false);
     }
 
     // ── Config tests ──────────────────────────────────────────────────────────
