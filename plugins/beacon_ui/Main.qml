@@ -338,7 +338,6 @@ Item {
             if (!r) return
             if (r.status === "complete") {
                 stop()
-                root.keycardAuthStatus = "complete"
                 // Deliver key to beacon C++ — only mark connected if key accepted
                 var skRaw = logos.callModule("logos_beacon", "setSigningKey", [r.key])
                 var skResult = root.callModuleParse(skRaw)
@@ -349,10 +348,17 @@ Item {
                     return
                 }
                 root.signingKeyHex = r.key
-                // Configure zone sequencer — keycardConnected set only if ready
+                // Configure zone sequencer
                 root.configureZoneSeq()
-                if (root.zoneSeqReady)
-                    root.keycardConnected = true
+                if (root.zoneSeqReady) {
+                    // Full success — auth complete and sequencer ready
+                    root.keycardAuthStatus = "complete"
+                    root.keycardConnected  = true
+                } else {
+                    // Key accepted but sequencer failed — surface error and retry
+                    root.keycardAuthStatus = "error"
+                    reconnectTimer.start()
+                }
             } else if (r.status === "rejected" || r.status === "failed") {
                 stop()
                 root.keycardAuthStatus  = r.status

@@ -150,3 +150,6 @@ Notes → Stash → Beacon (LEZ inscription). Zone-seq init required `set_channe
 
 ## fail 2026-04-24
 Senty 403 on GitHub comment: beacon-basecamp PR #2 review could not be posted automatically (Resource not accessible by integration). Findings were returned inline instead.
+
+## fail 2026-04-24
+Senty 403 repeated on beacon-basecamp PR #2 round 2 comment. GitHub integration token lacks write access to xAlisher/beacon-basecamp. Findings delivered inline again.
