@@ -22,7 +22,7 @@ public:
     Q_INVOKABLE void initLogos(LogosAPI* api);
 
     // ── Config ───────────────────────────────────────────────────────────────
-    // Returns {signingKeyHex, nodeUrl, watchStash:bool, persistencePath}
+    // Returns {signingKeyHex, nodeUrl, watchStash:bool, persistencePath, channelLabel}
     Q_INVOKABLE QString getBeaconConfig() const;
 
     // Persists beacon/nodeUrl. Returns {"ok":true} or {"error":"..."}
@@ -30,6 +30,9 @@ public:
 
     // Persists beacon/watchStash. Returns {"ok":true}
     Q_INVOKABLE QString setWatchStash(bool enabled);
+
+    // Persists beacon/channelLabel. Returns {"ok":true}
+    Q_INVOKABLE QString setChannelLabel(const QString& label);
 
     // ── State ────────────────────────────────────────────────────────────────
     // Returns {configured:bool, seenCids:N, inscribedCids:N}
@@ -49,13 +52,16 @@ public:
                                            const QString& inscriptionId,
                                            const QString& status);
 
+    // Called from QML after keycardAuthComplete — sets m_signingKeyHex (32-byte hex).
+    // Returns {"ok":true} or {"error":"..."}
+    Q_INVOKABLE QString setSigningKey(const QString& hexKey);
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
     void inscriptionConfirmed(int entryIndex, const QString& inscriptionId,
                               const QString& status);
 
 private:
-    void     ensureKey();
     void     loadLog();
     void     saveLog();
 
