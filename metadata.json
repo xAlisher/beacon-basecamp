@@ -1,0 +1,20 @@
+{
+  "name": "logos_beacon",
+  "version": "1.0.0",
+  "description": "Beacon — on-chain CID inscription",
+  "type": "core",
+  "main": "beacon_plugin",
+  "dependencies": [],
+  "category": "storage",
+  "icon": "",
+  "nix": {
+    "packages": { "build": [], "runtime": [] },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": ["Qt6 REQUIRED COMPONENTS Core Qml"],
+      "extra_sources": ["src/plugin/BeaconPlugin.cpp"],
+      "extra_include_dirs": ["src"],
+      "extra_link_libraries": ["Qt6::Core", "Qt6::Qml"]
+    }
+  }
+}

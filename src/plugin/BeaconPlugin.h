@@ -44,7 +44,18 @@ public:
     // ── Inscription ──────────────────────────────────────────────────────────
     // Checks for duplicate, appends pending entry, saves.
     // Returns {"ok":true,"entryIndex":N} | {"ok":true,"duplicate":true} | {"error":"..."}
-    Q_INVOKABLE QString pinCid(const QString& cid, const QString& label);
+    Q_INVOKABLE QString pinCid(const QString& cid, const QString& label,
+                               const QString& source = "");
+
+    // Derives a per-module signing key via SHA256(master_key || module_name).
+    // Returns {"signingKey":"<64-char-hex>"} or {"error":"key not set"}
+    Q_INVOKABLE QString deriveModuleSigningKey(const QString& moduleName);
+
+    // Scans inscription log, groups by source, returns [{name, cidCount, lastTs}].
+    Q_INVOKABLE QString getModules();
+
+    // Creates {persistencePath}/checkpoints/ directory. Returns {"ok":true} or {"error":"..."}
+    Q_INVOKABLE QString ensureCheckpointsDir();
 
     // Called from QML after zone seq responds. Updates entry status.
     // Returns {"ok":true} or {"error":"..."}
