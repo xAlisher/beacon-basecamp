@@ -67,6 +67,10 @@ Item {
     // when the card is present. keycardAuthPollTimer polls checkAuthStatus until done.
     function requestKeycardAuth() {
         if (typeof logos === "undefined" || !logos.callModule) return
+        // Guard: don't create a new request while one is already waiting for user approval.
+        // cardCheckTimer clears keycardAuthStatus before calling us, so card-removal
+        // re-auth is not blocked by this guard.
+        if (root.keycardAuthStatus === "pending" && root.keycardAuthId !== "") return
         logos.callModule("logos_beacon", "clearSigningKey", [])
         root.keycardConnected  = false
         root.keycardAuthStatus = ""
@@ -301,13 +305,22 @@ Item {
         nodeUrlInput.text       = root.nodeUrl
         channelLabelInput.text  = root.channelLabel
 
-        // Key now comes from keycard — request auth on startup.
-        // configureZoneSeq() is called once auth completes (keycardAuthPollTimer).
-        requestKeycardAuth()
+        // Delay first auth request by 2s — keycard module loads after beacon
+        // (demand-loaded when first called). Immediate call returns "not reachable".
+        startupAuthTimer.start()
         refreshLog()
     }
 
     // ── Timers ────────────────────────────────────────────────────────────────
+    // One-shot startup delay — gives keycard module time to load before first requestAuth.
+    Timer {
+        id: startupAuthTimer
+        interval: 2000
+        running:  false
+        repeat:   false
+        onTriggered: root.requestKeycardAuth()
+    }
+
     Timer {
         id: stashPollTimer
         interval: 10000
@@ -355,9 +368,10 @@ Item {
                     root.keycardAuthStatus = "complete"
                     root.keycardConnected  = true
                 } else {
-                    // Key accepted but sequencer failed — surface error and retry
+                    // Key accepted but zone sequencer not ready (node unreachable, module
+                    // not loaded, etc.). Auth itself succeeded — don't re-auth.
+                    // User must configure node URL / ensure zone seq module is running.
                     root.keycardAuthStatus = "error"
-                    reconnectTimer.start()
                 }
             } else if (r.status === "rejected" || r.status === "failed") {
                 stop()
@@ -393,7 +407,11 @@ Item {
             if (typeof logos === "undefined" || !logos.callModule) return
             var raw = logos.callModule("keycard", "getState", [])
             var r = root.callModuleParse(raw)
-            if (!r || r.state !== "SESSION_ACTIVE") {
+            // Only re-auth if card/reader physically gone. SESSION_ACTIVE is transient —
+            // the module closes the PC/SC session after key derivation (by design).
+            // Reconnecting on every non-SESSION_ACTIVE would loop immediately after auth.
+            var cardGone = !r || r.state === "READER_NOT_FOUND" || r.state === "CARD_NOT_PRESENT"
+            if (cardGone) {
                 // Clear backend signing key before any re-request
                 logos.callModule("logos_beacon", "clearSigningKey", [])
                 root.keycardConnected  = false
@@ -405,6 +423,16 @@ Item {
                 root.requestKeycardAuth()
             }
         }
+    }
+
+    // Stop all timers on destruction so blocking callModule calls don't fire
+    // into a destroyed object ("Object destroyed while signal handler in progress").
+    Component.onDestruction: {
+        startupAuthTimer.stop()
+        keycardAuthPollTimer.stop()
+        reconnectTimer.stop()
+        cardCheckTimer.stop()
+        stashPollTimer.stop()
     }
 
     // ── Log model ─────────────────────────────────────────────────────────────
@@ -470,7 +498,7 @@ Item {
 
             // ── Zone seq error banner ─────────────────────────────────────────
             Rectangle {
-                visible: !root.zoneSeqReady
+                visible: root.keycardConnected && !root.zoneSeqReady
                 Layout.fillWidth: true
                 height: 30
                 radius: 4

@@ -159,3 +159,9 @@ Senty 403 on GitHub comment: beacon-basecamp PR #2 review could not be posted au
 
 ## fail 2026-04-24
 Senty 403 repeated on beacon-basecamp PR #2 round 2 comment. GitHub integration token lacks write access to xAlisher/beacon-basecamp. Findings delivered inline again.
+
+## win 2026-04-28
+Keycard reinsertion auth fixed end-to-end. Root cause: CommandSet::select() had an m_appInfo.installed cache that was never cleared on card removal. onTargetLost() only called resetSecureChannel() — not clearStaleCardSessionState() — so m_appInfo.installed stayed true. On reinsertion, select() returned cached appInfo without sending SELECT APDU, then OPEN_SECURE_CHANNEL fired against unselected card → SW=6D00. Fix: clear m_appInfo and m_cardInstanceUID in both clearStaleCardSessionState() and onTargetLost().
+
+## win 2026-04-28
+Fixed EDEADLK crash in CommunicationManager::executeCommandSync(). The if/else wait branches held m_syncMutex via QMutexLocker, then fell through to a shared "check final result" block that tried to lock m_syncMutex again → std::system_error "Resource deadlock avoided". Fix: moved result extraction and m_pendingSync.remove() inside each branch while the lock is already held.
