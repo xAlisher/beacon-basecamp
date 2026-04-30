@@ -71,6 +71,9 @@ public:
     // Returns {"ok":true}
     Q_INVOKABLE QString clearSigningKey();
 
+    // Debug: appends msg to /tmp/beacon_plugin.diag with timestamp. Returns {"ok":true}.
+    Q_INVOKABLE QString diagLog(const QString& msg);
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
     void inscriptionConfirmed(int entryIndex, const QString& inscriptionId,

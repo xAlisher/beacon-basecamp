@@ -4,7 +4,7 @@
   "description": "Beacon — on-chain CID inscription",
   "author": "Beacon",
   "type": "core",
-  "main": "beacon_plugin",
+  "main": "logos_beacon_plugin",
   "dependencies": [],
   "category": "storage",
   "capabilities": [],

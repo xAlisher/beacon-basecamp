@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QDir>
 #include <QCryptographicHash>
+#include <QTextStream>
 #include <algorithm>
 
 // ── QSettings key prefix ──────────────────────────────────────────────────────
@@ -72,6 +73,18 @@ QString BeaconPlugin::setSigningKey(const QString& hexKey)
 QString BeaconPlugin::clearSigningKey()
 {
     m_signingKeyHex.clear();
+    return okJson();
+}
+
+// ── diagLog ───────────────────────────────────────────────────────────────────
+QString BeaconPlugin::diagLog(const QString& msg)
+{
+    QFile f(QStringLiteral("/tmp/beacon_plugin.diag"));
+    if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        QTextStream ts(&f);
+        ts << QDateTime::currentDateTime().toString(Qt::ISODateWithMs)
+           << " " << msg << "\n";
+    }
     return okJson();
 }
 

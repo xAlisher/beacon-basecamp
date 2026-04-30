@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Beacon — on-chain CID inscription",
   "type": "core",
-  "main": "beacon_plugin",
+  "main": "logos_beacon_plugin",
   "dependencies": [],
   "category": "storage",
   "icon": "",

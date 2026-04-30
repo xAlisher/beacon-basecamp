@@ -1,5 +1,25 @@
-cmake_minimum_required(VERSION 3.28)
-project(beacon-basecamp VERSION 1.0.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.14)
+project(BeaconPlugin LANGUAGES CXX)
+
+# ── Nix builder path ──────────────────────────────────────────────────────────
+# When built via logos-module-builder (nix build .#packages.x86_64-linux.lgx-portable),
+# LOGOS_MODULE_BUILDER_ROOT is set. logos_module() registers the target so the
+# builder can locate beacon_plugin.so.
+if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
+    include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
+
+    logos_module(
+        NAME logos_beacon
+        SOURCES
+            src/plugin/BeaconPlugin.h
+            src/plugin/BeaconPlugin.cpp
+        INCLUDE_DIRS
+            src
+    )
+
+else()
+# ── Local dev path ────────────────────────────────────────────────────────────
+# Used by: cmake -B build && cmake --build build && cmake --install build
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,17 +48,17 @@ else()
 endif()
 
 # ── Plugin ────────────────────────────────────────────────────────────────────
-add_library(beacon_plugin MODULE
+add_library(logos_beacon_plugin MODULE
     src/plugin/BeaconPlugin.h
     src/plugin/BeaconPlugin.cpp
 )
 
-set_target_properties(beacon_plugin PROPERTIES
+set_target_properties(logos_beacon_plugin PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "beacon_plugin"
+    OUTPUT_NAME "logos_beacon_plugin"
 )
 
-target_include_directories(beacon_plugin PRIVATE
+target_include_directories(logos_beacon_plugin PRIVATE
     src
     "${LOGOS_LIBLOGOS_HEADERS}"
     "${LOGOS_CPP_SDK}/include"
@@ -46,18 +66,15 @@ target_include_directories(beacon_plugin PRIVATE
     "${LOGOS_CPP_SDK}/include/core"
 )
 
-# whole-archive: keeps ModuleProxy::informModuleToken from being stripped
-# (whole-archive-module-proxy-strip skill)
-target_link_libraries(beacon_plugin PRIVATE
+# Note: Do NOT add --whole-archive around liblogos_sdk.a — it pulls in
+# QRemoteObjectRegistryHost(QUrl,QObject*) which was removed in Qt 6.9.3,
+# causing load failure outside the AppImage.
+target_link_libraries(logos_beacon_plugin PRIVATE
     Qt6::Core
     Qt6::Qml
     "${LOGOS_CPP_SDK}/lib/liblogos_sdk.a"
     dl pthread
 )
-# Note: Qt6RemoteObjects symbols (QRemoteObjectNode etc.) are pulled in by liblogos_sdk.a.
-# They resolve at runtime from the AppImage's already-loaded libQt6RemoteObjects (RTLD_GLOBAL).
-# Do NOT add --whole-archive: that pulls in QRemoteObjectRegistryHost(QUrl,QObject*) which
-# was removed in Qt 6.9.3 (renamed to private API), causing load failure outside the AppImage.
 
 configure_file(
     src/plugin/plugin_metadata.json
@@ -107,7 +124,7 @@ install(CODE "
     endforeach()
 ")
 
-install(TARGETS beacon_plugin LIBRARY DESTINATION "${BEACON_MODULE_DIR}")
+install(TARGETS logos_beacon_plugin LIBRARY DESTINATION "${BEACON_MODULE_DIR}")
 install(FILES
     modules/logos_beacon/manifest.json
     modules/logos_beacon/metadata.json
@@ -123,7 +140,11 @@ install(FILES
     DESTINATION "${BEACON_UI_DIR}"
 )
 install(FILES
-    assets/icons/Beacon_sidebar.png
+    plugins/beacon_ui/beacon.png
+    DESTINATION "${BEACON_UI_DIR}"
+)
+install(FILES
+    plugins/beacon_ui/icons/Copy.svg
     DESTINATION "${BEACON_UI_DIR}/icons"
 )
 
@@ -131,8 +152,8 @@ install(FILES
 find_program(PATCHELF_EXECUTABLE patchelf)
 if(PATCHELF_EXECUTABLE)
     install(CODE "
-        set(_plugin \"${BEACON_MODULE_DIR}/beacon_plugin.so\")
-        set(_build_so \"${CMAKE_BINARY_DIR}/beacon_plugin.so\")
+        set(_plugin \"${BEACON_MODULE_DIR}/logos_beacon_plugin.so\")
+        set(_build_so \"${CMAKE_BINARY_DIR}/logos_beacon_plugin.so\")
         if(EXISTS \"\${_plugin}\")
             execute_process(
                 COMMAND bash -c \"ldd '\${_build_so}' | grep nix/store | awk '{print \\\$3}' | xargs -I{} dirname {} | sort -u | tr '\\n' ':' | sed 's/:$//'\"
@@ -144,7 +165,7 @@ if(PATCHELF_EXECUTABLE)
             execute_process(
                 COMMAND ${PATCHELF_EXECUTABLE} --set-rpath \"\${_rpath}\" \"\${_plugin}\"
             )
-            message(STATUS \"Patched RUNPATH on beacon_plugin.so\")
+            message(STATUS \"Patched RUNPATH on logos_beacon_plugin.so\")
         endif()
     ")
 endif()
@@ -163,3 +184,5 @@ install(CODE "
     endforeach()
     message(STATUS \"Mirror to LogosBasecamp complete\")
 ")
+
+endif() # LOGOS_MODULE_BUILDER_ROOT
