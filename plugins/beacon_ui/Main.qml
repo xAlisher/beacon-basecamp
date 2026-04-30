@@ -143,11 +143,20 @@ Item {
     function inscribeManifest(name, channelId) {
         if (!root.zoneSeqReady || root.signingKeyHex === "" || root.channelId === "") return
 
-        // Use primary Beacon channel for manifest
+        // Fully re-initialize primary channel (mirrors configureZoneSeq) so any
+        // temporary signing-key switch in setupModuleChannel doesn't leave stale state
         logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [root.signingKeyHex])
         logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path",
                          [root.persistencePath + "/beacon.checkpoint"])
-        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [root.channelId])
+        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [""])
+        var chRaw2 = logos.callModule("liblogos_zone_sequencer_module", "get_channel_id", [])
+        var ch2 = callModuleParse(chRaw2)
+        var derivedId = typeof ch2 === 'string' ? ch2 : (ch2 && ch2.channelId ? ch2.channelId : "")
+        if (!derivedId || derivedId.length === 0 || derivedId.toLowerCase().startsWith("error")) {
+            appendActivity("manifest error for " + name + " (re-derive failed)", "error")
+            return
+        }
+        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [derivedId])
 
         var payload = JSON.stringify({
             v:          1,
@@ -206,10 +215,6 @@ Item {
         for (var key in existing) updated[key] = existing[key]
         updated[name] = { signingKey: sk, channelId: channelId }
         root.moduleChannels = updated
-
-        // Inscribe channel_manifest to primary Beacon channel on first activation
-        if (!root.manifestedModules[name])
-            inscribeManifest(name, channelId)
     }
 
     // ── Inscription flow ──────────────────────────────────────────────────────
@@ -322,6 +327,13 @@ Item {
                          [root.persistencePath + "/beacon.checkpoint"])
         logos.callModule("liblogos_zone_sequencer_module",
                          "set_channel_id", [root.channelId])
+
+        // Manifest module channel to primary Beacon channel on first successful inscription
+        if (status === "ok" && source && source.length > 0
+                && root.moduleChannels[source]
+                && !root.manifestedModules[source]) {
+            inscribeManifest(source, root.moduleChannels[source].channelId)
+        }
 
         root.pollBusy = false
     }
