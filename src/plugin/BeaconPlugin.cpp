@@ -312,3 +312,57 @@ QString BeaconPlugin::confirmInscription(int entryIndex,
 
     return okJson();
 }
+
+// ── getManifestLog ────────────────────────────────────────────────────────────
+// Returns a JSON array of module names that have been manifested to the primary
+// Beacon channel, e.g. ["notes", "stash"]. Loaded from manifest-log.json.
+QString BeaconPlugin::getManifestLog() const
+{
+    if (m_persistencePath.isEmpty())
+        return QJsonDocument(QJsonArray()).toJson(QJsonDocument::Compact);
+
+    QString path = m_persistencePath + QStringLiteral("/manifest-log.json");
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QJsonDocument(QJsonArray()).toJson(QJsonDocument::Compact);
+
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (doc.isArray())
+        return QJsonDocument(doc.array()).toJson(QJsonDocument::Compact);
+
+    return QJsonDocument(QJsonArray()).toJson(QJsonDocument::Compact);
+}
+
+// ── recordManifest ────────────────────────────────────────────────────────────
+// Appends moduleName to manifest-log.json if not already present.
+QString BeaconPlugin::recordManifest(const QString& moduleName)
+{
+    if (m_persistencePath.isEmpty())
+        return errorJson(QStringLiteral("persistence path not set"));
+
+    QString path = m_persistencePath + QStringLiteral("/manifest-log.json");
+
+    // Load existing
+    QJsonArray arr;
+    QFile rf(path);
+    if (rf.open(QIODevice::ReadOnly)) {
+        QJsonDocument doc = QJsonDocument::fromJson(rf.readAll());
+        if (doc.isArray())
+            arr = doc.array();
+        rf.close();
+    }
+
+    // Idempotent: only append if not already present
+    for (int i = 0; i < arr.size(); ++i)
+        if (arr[i].toString() == moduleName)
+            return okJson();
+
+    arr.append(moduleName);
+
+    QFile wf(path);
+    if (!wf.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return errorJson(QStringLiteral("failed to write manifest-log.json"));
+
+    wf.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+    return okJson();
+}

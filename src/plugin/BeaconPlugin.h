@@ -74,6 +74,12 @@ public:
     // Debug: appends msg to /tmp/beacon_plugin.diag with timestamp. Returns {"ok":true}.
     Q_INVOKABLE QString diagLog(const QString& msg);
 
+    // Returns JSON array of module names already inscribed to the manifest channel.
+    Q_INVOKABLE QString getManifestLog() const;
+
+    // Appends moduleName to manifest-log.json. Returns {"ok":true} or {"error":"..."}.
+    Q_INVOKABLE QString recordManifest(const QString& moduleName);
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
     void inscriptionConfirmed(int entryIndex, const QString& inscriptionId,

@@ -31,6 +31,7 @@ Item {
 
     property int    stashSeenCount:    0
     property bool   pollBusy:          false
+    property var    manifestedModules: ({})   // module name → true, loaded from manifest-log.json
     property int    inscribedCount:    0
     property string channelLabel:      "My Beacon"   // kept for future use
     property string broadcastStatus:   ""             // kept for future use
@@ -136,6 +137,47 @@ Item {
         }
     }
 
+    // ── Channel manifest inscription ─────────────────────────────────────────
+    // Inscribes a channel_manifest entry to the primary Beacon channel so Cord
+    // can discover all module channels from a single Beacon key lookup.
+    function inscribeManifest(name, channelId) {
+        if (!root.zoneSeqReady || root.signingKeyHex === "" || root.channelId === "") return
+
+        // Use primary Beacon channel for manifest
+        logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [root.signingKeyHex])
+        logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path",
+                         [root.persistencePath + "/beacon.checkpoint"])
+        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [root.channelId])
+
+        var payload = JSON.stringify({
+            v:          1,
+            type:       "channel_manifest",
+            module:     name,
+            channel_id: channelId,
+            ts:         Math.floor(Date.now() / 1000)
+        })
+
+        var pubRaw    = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
+        var pubResult = callModuleParse(pubRaw)
+
+        var isError = false
+        if (typeof pubResult === 'string')
+            isError = pubResult.toLowerCase().startsWith("error") || pubResult.length === 0
+        else if (pubResult && pubResult.error)
+            isError = true
+
+        if (!isError) {
+            logos.callModule("logos_beacon", "recordManifest", [name])
+            var updated = {}
+            for (var k in root.manifestedModules) updated[k] = root.manifestedModules[k]
+            updated[name] = true
+            root.manifestedModules = updated
+            appendActivity("manifested " + name + " channel — " + channelId.substring(0,16) + "…", "success")
+        } else {
+            appendActivity("manifest error for " + name, "error")
+        }
+    }
+
     // ── Per-module channel derivation ─────────────────────────────────────────
     function setupModuleChannel(name) {
         if (root.moduleChannels[name]) return
@@ -164,6 +206,10 @@ Item {
         for (var key in existing) updated[key] = existing[key]
         updated[name] = { signingKey: sk, channelId: channelId }
         root.moduleChannels = updated
+
+        // Inscribe channel_manifest to primary Beacon channel on first activation
+        if (!root.manifestedModules[name])
+            inscribeManifest(name, channelId)
     }
 
     // ── Inscription flow ──────────────────────────────────────────────────────
@@ -408,6 +454,15 @@ Item {
         root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
         root.persistencePath = cfg.persistencePath || ""
         root.channelLabel    = cfg.channelLabel    || "My Beacon"
+
+        // Load already-manifested modules so we don't re-inscribe on restart
+        var mRaw = logos.callModule("logos_beacon", "getManifestLog", [])
+        var mList = callModuleParse(mRaw)
+        if (Array.isArray(mList)) {
+            var mm = {}
+            for (var mi = 0; mi < mList.length; mi++) mm[mList[mi]] = true
+            root.manifestedModules = mm
+        }
 
         nodeUrlInput.text = root.nodeUrl
 
