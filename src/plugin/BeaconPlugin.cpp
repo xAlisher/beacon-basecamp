@@ -7,6 +7,9 @@
 #include <QDateTime>
 #include <QFile>
 #include <QDir>
+#include <QCryptographicHash>
+#include <QTextStream>
+#include <algorithm>
 
 // ── QSettings key prefix ──────────────────────────────────────────────────────
 static constexpr const char* kNodeUrlKey      = "beacon/nodeUrl";
@@ -70,6 +73,18 @@ QString BeaconPlugin::setSigningKey(const QString& hexKey)
 QString BeaconPlugin::clearSigningKey()
 {
     m_signingKeyHex.clear();
+    return okJson();
+}
+
+// ── diagLog ───────────────────────────────────────────────────────────────────
+QString BeaconPlugin::diagLog(const QString& msg)
+{
+    QFile f(QStringLiteral("/tmp/beacon_plugin.diag"));
+    if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        QTextStream ts(&f);
+        ts << QDateTime::currentDateTime().toString(Qt::ISODateWithMs)
+           << " " << msg << "\n";
+    }
     return okJson();
 }
 
@@ -176,7 +191,8 @@ QString BeaconPlugin::getInscriptionLog() const
 }
 
 // ── pinCid ────────────────────────────────────────────────────────────────────
-QString BeaconPlugin::pinCid(const QString& cid, const QString& label)
+QString BeaconPlugin::pinCid(const QString& cid, const QString& label,
+                              const QString& source)
 {
     if (cid.trimmed().isEmpty())
         return errorJson(QStringLiteral("cid must not be empty"));
@@ -195,6 +211,7 @@ QString BeaconPlugin::pinCid(const QString& cid, const QString& label)
     QJsonObject entry;
     entry[QStringLiteral("cid")]           = cid;
     entry[QStringLiteral("label")]         = label;
+    entry[QStringLiteral("source")]        = source;
     entry[QStringLiteral("ts")]            = QDateTime::currentSecsSinceEpoch();
     entry[QStringLiteral("status")]        = QStringLiteral("pending");
     entry[QStringLiteral("inscriptionId")] = QString();
@@ -207,6 +224,74 @@ QString BeaconPlugin::pinCid(const QString& cid, const QString& label)
     o[QStringLiteral("ok")]         = true;
     o[QStringLiteral("entryIndex")] = entryIndex;
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
+}
+
+// ── deriveModuleSigningKey ────────────────────────────────────────────────────
+QString BeaconPlugin::deriveModuleSigningKey(const QString& moduleName)
+{
+    if (m_signingKeyHex.isEmpty())
+        return errorJson(QStringLiteral("key not set"));
+
+    QByteArray masterKeyBytes  = QByteArray::fromHex(m_signingKeyHex.toUtf8());
+    QByteArray moduleNameUtf8  = moduleName.toUtf8();
+    QByteArray derived = QCryptographicHash::hash(masterKeyBytes + moduleNameUtf8,
+                                                  QCryptographicHash::Sha256);
+    QJsonObject o;
+    o[QStringLiteral("signingKey")] = QString::fromLatin1(derived.toHex());
+    return QJsonDocument(o).toJson(QJsonDocument::Compact);
+}
+
+// ── getModules ────────────────────────────────────────────────────────────────
+QString BeaconPlugin::getModules()
+{
+    QMap<QString, QJsonObject> groups;
+
+    for (int i = 0; i < m_log.size(); ++i) {
+        QJsonObject e      = m_log[i].toObject();
+        QString     source = e[QStringLiteral("source")].toString();
+
+        if (!groups.contains(source)) {
+            QJsonObject g;
+            g[QStringLiteral("name")]     = source;
+            g[QStringLiteral("cidCount")] = 0;
+            g[QStringLiteral("lastTs")]   = qint64(0);
+            groups[source] = g;
+        }
+
+        QJsonObject g = groups[source];
+        g[QStringLiteral("cidCount")] = g[QStringLiteral("cidCount")].toInt() + 1;
+
+        qint64 ts = e[QStringLiteral("ts")].toVariant().toLongLong();
+        if (ts > g[QStringLiteral("lastTs")].toVariant().toLongLong())
+            g[QStringLiteral("lastTs")] = ts;
+
+        groups[source] = g;
+    }
+
+    QList<QJsonObject> list = groups.values();
+    std::sort(list.begin(), list.end(), [](const QJsonObject& a, const QJsonObject& b) {
+        return a[QStringLiteral("lastTs")].toVariant().toLongLong() >
+               b[QStringLiteral("lastTs")].toVariant().toLongLong();
+    });
+
+    QJsonArray arr;
+    for (const auto& g : list)
+        arr.append(g);
+
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
+}
+
+// ── ensureCheckpointsDir ──────────────────────────────────────────────────────
+QString BeaconPlugin::ensureCheckpointsDir()
+{
+    if (m_persistencePath.isEmpty())
+        return errorJson(QStringLiteral("persistence path not set"));
+
+    QDir dir(m_persistencePath + QStringLiteral("/checkpoints"));
+    if (dir.mkpath(QStringLiteral(".")))
+        return okJson();
+
+    return errorJson(QStringLiteral("failed to create checkpoints dir"));
 }
 
 // ── confirmInscription ────────────────────────────────────────────────────────

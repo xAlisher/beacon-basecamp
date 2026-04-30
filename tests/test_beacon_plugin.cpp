@@ -345,6 +345,145 @@ private slots:
         auto st = parseObj(p.getStatus());
         QCOMPARE(st["configured"].toBool(), true);
     }
+
+    // ── source field tests ────────────────────────────────────────────────────
+
+    void testPinCidStoresSource()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseObj(p.pinCid("QmTestCid1111111111111111111111111111111111111111",
+                                   "test", "stash"));
+        QVERIFY(r["ok"].toBool());
+
+        auto log = parseArr(p.getInscriptionLog());
+        QCOMPARE(log.size(), 1);
+        QCOMPARE(log[0].toObject()["source"].toString(), QString("stash"));
+    }
+
+    void testPinCidDefaultSourceEmpty()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        // No source arg — defaults to ""
+        p.pinCid("QmTestCid1111111111111111111111111111111111111111", "test");
+
+        auto log = parseArr(p.getInscriptionLog());
+        QCOMPARE(log[0].toObject()["source"].toString(), QString(""));
+    }
+
+    // ── deriveModuleSigningKey tests ──────────────────────────────────────────
+
+    void testDeriveModuleSigningKeyNoKey()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseObj(p.deriveModuleSigningKey("stash"));
+        QVERIFY(r.contains("error"));
+    }
+
+    void testDeriveModuleSigningKeyReturnsHex()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+        p.setSigningKey("a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1");
+
+        auto r = parseObj(p.deriveModuleSigningKey("stash"));
+        QVERIFY(!r.contains("error"));
+        QVERIFY(r.contains("signingKey"));
+        // SHA256 produces 32 bytes = 64 hex chars
+        QCOMPARE(r["signingKey"].toString().length(), 64);
+    }
+
+    void testDeriveModuleSigningKeyDeterministic()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+        p.setSigningKey("a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1c2d3e4f5a0b1");
+
+        auto r1 = parseObj(p.deriveModuleSigningKey("stash"));
+        auto r2 = parseObj(p.deriveModuleSigningKey("stash"));
+        auto r3 = parseObj(p.deriveModuleSigningKey("notes"));
+
+        // Same module → same key
+        QCOMPARE(r1["signingKey"].toString(), r2["signingKey"].toString());
+        // Different module → different key
+        QVERIFY(r1["signingKey"].toString() != r3["signingKey"].toString());
+    }
+
+    // ── getModules tests ──────────────────────────────────────────────────────
+
+    void testGetModulesEmpty()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseArr(p.getModules());
+        QCOMPARE(r.size(), 0);
+    }
+
+    void testGetModulesGroupsBySource()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        p.pinCid("QmTestCid1111111111111111111111111111111111111111", "a", "stash");
+        p.pinCid("QmTestCid2222222222222222222222222222222222222222", "b", "stash");
+        p.pinCid("QmTestCid3333333333333333333333333333333333333333", "c", "notes");
+        p.pinCid("QmTestCid4444444444444444444444444444444444444444", "d", "");
+
+        auto r = parseArr(p.getModules());
+        // 3 groups: "stash", "notes", ""
+        QCOMPARE(r.size(), 3);
+
+        // Find stash group
+        QJsonObject stashGroup;
+        for (int i = 0; i < r.size(); ++i) {
+            if (r[i].toObject()["name"].toString() == "stash")
+                stashGroup = r[i].toObject();
+        }
+        QVERIFY(!stashGroup.isEmpty());
+        QCOMPARE(stashGroup["cidCount"].toInt(), 2);
+    }
+
+    // ── ensureCheckpointsDir tests ────────────────────────────────────────────
+
+    void testEnsureCheckpointsDirCreates()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseObj(p.ensureCheckpointsDir());
+        QVERIFY(r["ok"].toBool());
+        QVERIFY(QDir(tmp.path() + "/checkpoints").exists());
+    }
 };
 
 QTEST_MAIN(TestBeaconPlugin)

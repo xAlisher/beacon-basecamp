@@ -44,7 +44,18 @@ public:
     // ── Inscription ──────────────────────────────────────────────────────────
     // Checks for duplicate, appends pending entry, saves.
     // Returns {"ok":true,"entryIndex":N} | {"ok":true,"duplicate":true} | {"error":"..."}
-    Q_INVOKABLE QString pinCid(const QString& cid, const QString& label);
+    Q_INVOKABLE QString pinCid(const QString& cid, const QString& label,
+                               const QString& source = "");
+
+    // Derives a per-module signing key via SHA256(master_key || module_name).
+    // Returns {"signingKey":"<64-char-hex>"} or {"error":"key not set"}
+    Q_INVOKABLE QString deriveModuleSigningKey(const QString& moduleName);
+
+    // Scans inscription log, groups by source, returns [{name, cidCount, lastTs}].
+    Q_INVOKABLE QString getModules();
+
+    // Creates {persistencePath}/checkpoints/ directory. Returns {"ok":true} or {"error":"..."}
+    Q_INVOKABLE QString ensureCheckpointsDir();
 
     // Called from QML after zone seq responds. Updates entry status.
     // Returns {"ok":true} or {"error":"..."}
@@ -59,6 +70,9 @@ public:
     // Called from QML on card removal or auth restart — clears m_signingKeyHex.
     // Returns {"ok":true}
     Q_INVOKABLE QString clearSigningKey();
+
+    // Debug: appends msg to /tmp/beacon_plugin.diag with timestamp. Returns {"ok":true}.
+    Q_INVOKABLE QString diagLog(const QString& msg);
 
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
