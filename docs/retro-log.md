@@ -165,3 +165,17 @@ Keycard reinsertion auth fixed end-to-end. Root cause: CommandSet::select() had 
 
 ## win 2026-04-28
 Fixed EDEADLK crash in CommunicationManager::executeCommandSync(). The if/else wait branches held m_syncMutex via QMutexLocker, then fell through to a shared "check final result" block that tried to lock m_syncMutex again → std::system_error "Resource deadlock avoided". Fix: moved result extraction and m_pendingSync.remove() inside each branch while the lock is already held.
+
+---
+
+## win 2026-04-30 — issue #12: source field in cid_pin payload + full demo polish
+
+PR #6 merged. `pinCid(cid, label, source)` 3-arg C++ invokable live; source stored in log entry and included in payload. Source routing: stash entries without explicit source map to "notes" channel. No-channel fallback to primary instead of hard error. Log format rewritten to show full provenance chain `[notes → stash → Logos Storage]`. Removed `●` noise from all activity/log entries. Updated description. All fixes committed to source so `cmake --install` no longer clobbers them.
+
+## fail 2026-04-30 — cmake --install silently overwrote hand-edited installed QML
+
+Applied four QML fixes directly to installed `Main.qml`, then ran `cmake --install` to deploy the rebuilt beacon .so. Install overwrote all QML fixes. Had to re-apply all four patches. Fix: always patch source QML first; if patching installed file during live demo, immediately copy back to source.
+
+## fail 2026-04-30 — pinCid "Invalid response" from installed .so with 2-arg signature
+
+QML calling `pinCid(cid, label, source)` (3 args) against installed .so that only registered 2-arg `pinCid(cid, label)`. Qt bridge silently rejected the call. Symptom: `callModuleParse` returned null → logged "error: pinCid Invalid response". Fix: rebuild + reinstall .so. Root cause: issue #12 was implemented in source but the installed .so was never updated in the previous session.
