@@ -176,6 +176,15 @@ PR #6 merged. `pinCid(cid, label, source)` 3-arg C++ invokable live; source stor
 
 Applied four QML fixes directly to installed `Main.qml`, then ran `cmake --install` to deploy the rebuilt beacon .so. Install overwrote all QML fixes. Had to re-apply all four patches. Fix: always patch source QML first; if patching installed file during live demo, immediately copy back to source.
 
+## win 2026-04-30 — issue #7: defer inscribeManifest past sequencer async init window
+
+PR #8 merged. Root cause: `tryCreateSequencer()` in zone_seq uses `QtConcurrent::run()` —
+`m_sequencerHandle` is null for hundreds of ms after `configureZoneSeq()` returns. Moving
+`inscribeManifest` from `setupModuleChannel` (immediately post-config) to `inscribeCid`
+(after first successful `publish()`) fixed the timing. Sequencer proved live by publish
+success; re-derive guard `!manifestedModules[source]` keeps it idempotent. Extracted to
+`zone-seq-async-init-defer-publish` skill.
+
 ## fail 2026-04-30 — pinCid "Invalid response" from installed .so with 2-arg signature
 
 QML calling `pinCid(cid, label, source)` (3 args) against installed .so that only registered 2-arg `pinCid(cid, label)`. Qt bridge silently rejected the call. Symptom: `callModuleParse` returned null → logged "error: pinCid Invalid response". Fix: rebuild + reinstall .so. Root cause: issue #12 was implemented in source but the installed .so was never updated in the previous session.
