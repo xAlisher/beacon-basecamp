@@ -109,7 +109,7 @@ cmake -B build && cmake --build build -j$(nproc)
 # Test
 cd build && ctest --output-on-failure
 
-# Install (LogosApp + mirrors to LogosBasecamp)
+# Install to LogosBasecamp
 cmake --install build
 
 # Kill + relaunch Basecamp
@@ -122,7 +122,7 @@ pkill -9 -f "LogosBasecamp.elf"; sleep 1
 ## Module Install Paths
 
 ```
-~/.local/share/Logos/LogosApp/
+~/.local/share/Logos/LogosBasecamp/
 ├── modules/logos_beacon/
 │   ├── beacon_plugin.so
 │   ├── manifest.json / metadata.json / plugin_metadata.json / variant
@@ -130,8 +130,6 @@ pkill -9 -f "LogosBasecamp.elf"; sleep 1
     ├── Main.qml / manifest.json / metadata.json / variant
     └── icons/Beacon_sidebar.png
 ```
-
-CMake install also mirrors to `LogosBasecamp/` automatically.
 
 ---
 
