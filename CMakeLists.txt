@@ -111,13 +111,13 @@ target_link_libraries(test_beacon_plugin PRIVATE
 add_test(NAME test_beacon_plugin COMMAND test_beacon_plugin)
 
 # ── Install paths ─────────────────────────────────────────────────────────────
-set(LOGOS_APP_DATA "$ENV{HOME}/.local/share/Logos/LogosApp")
-set(BEACON_MODULE_DIR "${LOGOS_APP_DATA}/modules/logos_beacon")
-set(BEACON_UI_DIR     "${LOGOS_APP_DATA}/plugins/beacon_ui")
+set(LOGOS_BASECAMP_DATA "$ENV{HOME}/.local/share/Logos/LogosBasecamp")
+set(BEACON_MODULE_DIR "${LOGOS_BASECAMP_DATA}/modules/logos_beacon")
+set(BEACON_UI_DIR     "${LOGOS_BASECAMP_DATA}/plugins/beacon_ui")
 
 # Clean old module dir on reinstall
 install(CODE "
-    set(_modules_dir \"\\$ENV{DESTDIR}${LOGOS_APP_DATA}/modules\")
+    set(_modules_dir \"\\$ENV{DESTDIR}${LOGOS_BASECAMP_DATA}/modules\")
     file(GLOB _old \"\${_modules_dir}/logos_beacon*\")
     foreach(_dir \${_old})
         file(REMOVE_RECURSE \"\${_dir}\")
@@ -148,7 +148,7 @@ install(FILES
     DESTINATION "${BEACON_UI_DIR}/icons"
 )
 
-# Patch RUNPATH so Qt libs resolve correctly when loaded from AppImage
+# Patch RUNPATH so Qt libs resolve correctly when loaded from Basecamp AppImage
 find_program(PATCHELF_EXECUTABLE patchelf)
 if(PATCHELF_EXECUTABLE)
     install(CODE "
@@ -169,20 +169,5 @@ if(PATCHELF_EXECUTABLE)
         endif()
     ")
 endif()
-
-# Mirror to LogosBasecamp
-install(CODE "
-    set(_mod_src \"${BEACON_MODULE_DIR}\")
-    set(_mod_dst \"\$ENV{HOME}/.local/share/Logos/LogosBasecamp/modules/logos_beacon\")
-    file(COPY \"\${_mod_src}/\" DESTINATION \"\${_mod_dst}\")
-
-    set(_ui_src \"${BEACON_UI_DIR}\")
-    set(_ui_dst \"\$ENV{HOME}/.local/share/Logos/LogosBasecamp/plugins/beacon_ui\")
-    file(GLOB _ui_files \"\${_ui_src}/*\")
-    foreach(_f \${_ui_files})
-        file(COPY \"\${_f}\" DESTINATION \"\${_ui_dst}\")
-    endforeach()
-    message(STATUS \"Mirror to LogosBasecamp complete\")
-")
 
 endif() # LOGOS_MODULE_BUILDER_ROOT
