@@ -37,14 +37,14 @@ if(DEFINED ENV{LOGOS_LIBLOGOS_HEADERS})
     set(LOGOS_LIBLOGOS_HEADERS "$ENV{LOGOS_LIBLOGOS_HEADERS}")
 else()
     set(LOGOS_LIBLOGOS_HEADERS
-        "/nix/store/8cgbzy0jczrpizyga4i4pfjba77m3k7f-logos-liblogos-headers-0.1.0/include")
+        "/nix/store/lkr4jwcdh7k1yw5lisvpvaya4pq8qiv4-logos-liblogos-headers-0.1.0/include")
 endif()
 
 if(DEFINED ENV{LOGOS_CPP_SDK_ROOT})
     set(LOGOS_CPP_SDK "$ENV{LOGOS_CPP_SDK_ROOT}")
 else()
     set(LOGOS_CPP_SDK
-        "/nix/store/rbsasyd55ijnxliw30j2r4ph7v5x6ljs-logos-cpp-sdk")
+        "/nix/store/c23ijr4km1wc2jixw4siqmbw3yaqf4z2-logos-cpp-sdk")
 endif()
 
 # ── Plugin ────────────────────────────────────────────────────────────────────
