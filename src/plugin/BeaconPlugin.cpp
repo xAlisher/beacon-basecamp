@@ -97,6 +97,14 @@ QString BeaconPlugin::diagLog(const QString& msg)
     return okJson();
 }
 
+// ── clearInscriptionLog ───────────────────────────────────────────────────────
+QString BeaconPlugin::clearInscriptionLog()
+{
+    m_log = QJsonArray();
+    saveLog();
+    return okJson();
+}
+
 // ── getBeaconConfig ───────────────────────────────────────────────────────────
 QString BeaconPlugin::getBeaconConfig() const
 {

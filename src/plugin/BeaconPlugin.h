@@ -79,6 +79,9 @@ public:
     // Returns {"ok":true}
     Q_INVOKABLE QString clearSigningKey();
 
+    // Clears the in-memory inscription log and removes inscription-log.json. Returns {"ok":true}.
+    Q_INVOKABLE QString clearInscriptionLog();
+
     // Debug: appends msg to /tmp/beacon_plugin.diag with timestamp. Returns {"ok":true}.
     Q_INVOKABLE QString diagLog(const QString& msg);
 
