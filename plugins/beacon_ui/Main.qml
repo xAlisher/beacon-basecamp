@@ -30,7 +30,6 @@ Item {
     property bool   zoneSeqReady:      false
     property bool   settingsPanelOpen: false
 
-    property int    stashSeenCount:    0
     property bool   pollBusy:          false
     property var    manifestedModules: ({})   // module name → true, loaded from manifest-log.json
     property int    inscribedCount:    0
@@ -248,11 +247,11 @@ Item {
 
         if (!pin || pin.error) {
             appendActivity("error: pinCid " + (pin ? pin.error : "null"), "error")
-            root.pollBusy = false; return
+            root.pollBusy = false; return false
         }
         if (pin.duplicate === true) {
             appendActivity("duplicate: " + cid.substring(0,16) + "…", "muted")
-            root.pollBusy = false; return
+            root.pollBusy = false; return true  // confirmed on-chain — caller should markInscribed
         }
 
         var entryIndex = pin.entryIndex
@@ -267,10 +266,6 @@ Item {
             status:        "pending"
         })
 
-        logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [useKey])
-        logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path", [useCheckpoint])
-        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [useChannelId])
-
         var payload = JSON.stringify({
             v:      1,
             type:   "cid_pin",
@@ -280,8 +275,16 @@ Item {
             ts:     Math.floor(Date.now() / 1000)
         })
 
-        var pubRaw    = logos.callModule("liblogos_zone_sequencer_module",
-                                         "publish", [payload])
+        var pubRaw
+        if (useChannelId === root.channelId) {
+            // Primary beacon channel — use the persistent sequencer handle (fast path)
+            pubRaw = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
+        } else {
+            // Module sub-channel — use stateless publish_to so the correct channel is used.
+            // publish() would silently go to the primary handle regardless of set_channel_id.
+            pubRaw = logos.callModule("liblogos_zone_sequencer_module",
+                                      "publish_to", [useChannelId, useKey, useCheckpoint, payload])
+        }
         var pubResult = callModuleParse(pubRaw)
 
         var inscriptionId = ""
@@ -321,14 +324,6 @@ Item {
         else
             appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
 
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_signing_key", [root.signingKeyHex])
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_checkpoint_path",
-                         [root.persistencePath + "/beacon.checkpoint"])
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_channel_id", [root.channelId])
-
         // Manifest module channel to primary Beacon channel on first successful inscription
         if (status === "ok" && source && source.length > 0
                 && root.moduleChannels[source]
@@ -337,6 +332,7 @@ Item {
         }
 
         root.pollBusy = false
+        return status === "ok"
     }
 
     // ── Broadcast channel announce (kept for future use; not exposed in UI) ───
@@ -372,45 +368,34 @@ Item {
         root.pollBusy = false
     }
 
-    // ── Stash log polling ─────────────────────────────────────────────────────
-    function extractCid(text) {
-        var m = text.match(/\b(Qm[1-9A-HJ-NP-Za-km-z]{44}|baf[a-zA-Z0-9]{50,}|zDvZ[1-9A-HJ-NP-Za-km-z]{40,})\b/)
-        return m ? m[1] : ""
-    }
-
-    function pollStash() {
+    // ── Module inscription queue polling ─────────────────────────────────────
+    function pollModules() {
         if (root.pollBusy) return
         if (!root.keycardConnected) return
         if (typeof logos === "undefined" || !logos.callModule) return
+        if (root.watchedSources.length === 0) return
 
         root.pollBusy = true
 
-        var raw     = logos.callModule("stash", "getLog", [])
-        var entries = callModuleParse(raw)
+        for (var i = 0; i < root.watchedSources.length; i++) {
+            var moduleName = root.watchedSources[i]
+            var queueRaw   = logos.callModule(moduleName, "getInscriptionQueue", [])
+            var queue      = callModuleParse(queueRaw)
+            if (!Array.isArray(queue) || queue.length === 0) continue
 
-        if (!Array.isArray(entries)) { root.pollBusy = false; return }
-
-        for (var i = root.stashSeenCount; i < entries.length; i++) {
-            var e   = entries[i]
-            var cid = ""
-            if (e.cid && e.cid.length > 0) {
-                cid = e.cid
-            } else if (e.detail) {
-                cid = extractCid(e.detail)
-            }
-            if (cid !== "") {
-                var src = (e.source && e.source !== "stash") ? e.source : "notes"
-                if (root.watchedSources.indexOf(src) === -1) continue   // not whitelisted
-                appendActivity("detected " + cid + " from " + src, "info")
-                var lbl = e.detail ? e.detail : ("stash upload " + cid.substring(0, 12))
+            for (var j = 0; j < queue.length; j++) {
+                var entry = queue[j]
+                if (!entry.cid) continue
+                appendActivity("queued from " + moduleName + ": " + entry.cid.substring(0, 16) + "…", "info")
                 root.pollBusy = false
-                inscribeCid(cid, lbl, src)
+                var inscribed = inscribeCid(entry.cid, entry.label || entry.cid, moduleName)
                 root.pollBusy = true
+                if (inscribed)
+                    logos.callModule(moduleName, "markInscribed", [entry.cid])
             }
         }
 
-        root.stashSeenCount = entries.length
-        root.pollBusy       = false
+        root.pollBusy = false
     }
 
     // ── Log refresh ───────────────────────────────────────────────────────────
@@ -495,9 +480,9 @@ Item {
     Timer {
         id: stashPollTimer
         interval: 10000
-        running:  true   // always running; pollStash() checks keycardConnected internally
+        running:  true   // always running; pollModules() checks keycardConnected internally
         repeat:   true
-        onTriggered: root.pollStash()
+        onTriggered: root.pollModules()
     }
 
     Timer {
@@ -859,7 +844,7 @@ Item {
                                         font.pixelSize: 12
                                         font.family: "monospace"
                                         wrapMode: TextArea.NoWrap
-                                        placeholderText: "notes\nkeeper"
+                                        placeholderText: "keeper"
                                         placeholderTextColor: root.textMuted
                                         background: null
                                         text: root.watchedSources.join("\n")

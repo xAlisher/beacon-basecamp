@@ -228,14 +228,21 @@ QString BeaconPlugin::pinCid(const QString& cid, const QString& label,
     if (cid.trimmed().isEmpty())
         return errorJson(QStringLiteral("cid must not be empty"));
 
-    // Duplicate guard: check if CID already in log
+    // Duplicate guard: only block if already confirmed on-chain (inscriptionId set).
+    // Pending entries (inscriptionId empty) are re-tried — they were never published.
     for (int i = 0; i < m_log.size(); ++i) {
         QJsonObject e = m_log[i].toObject();
         if (e[QStringLiteral("cid")].toString() == cid) {
-            QJsonObject o;
-            o[QStringLiteral("ok")]        = true;
-            o[QStringLiteral("duplicate")] = true;
-            return QJsonDocument(o).toJson(QJsonDocument::Compact);
+            if (!e[QStringLiteral("inscriptionId")].toString().isEmpty()) {
+                QJsonObject o;
+                o[QStringLiteral("ok")]        = true;
+                o[QStringLiteral("duplicate")] = true;
+                return QJsonDocument(o).toJson(QJsonDocument::Compact);
+            }
+            // Pending — remove stale entry, fall through to re-inscribe below.
+            m_log.removeAt(i);
+            saveLog();
+            break;
         }
     }
 
