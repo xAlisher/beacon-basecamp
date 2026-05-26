@@ -247,11 +247,11 @@ Item {
 
         if (!pin || pin.error) {
             appendActivity("error: pinCid " + (pin ? pin.error : "null"), "error")
-            root.pollBusy = false; return
+            root.pollBusy = false; return false
         }
         if (pin.duplicate === true) {
             appendActivity("duplicate: " + cid.substring(0,16) + "…", "muted")
-            root.pollBusy = false; return
+            root.pollBusy = false; return true  // confirmed on-chain — caller should markInscribed
         }
 
         var entryIndex = pin.entryIndex
@@ -266,10 +266,6 @@ Item {
             status:        "pending"
         })
 
-        logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [useKey])
-        logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path", [useCheckpoint])
-        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [useChannelId])
-
         var payload = JSON.stringify({
             v:      1,
             type:   "cid_pin",
@@ -279,8 +275,16 @@ Item {
             ts:     Math.floor(Date.now() / 1000)
         })
 
-        var pubRaw    = logos.callModule("liblogos_zone_sequencer_module",
-                                         "publish", [payload])
+        var pubRaw
+        if (useChannelId === root.channelId) {
+            // Primary beacon channel — use the persistent sequencer handle (fast path)
+            pubRaw = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
+        } else {
+            // Module sub-channel — use stateless publish_to so the correct channel is used.
+            // publish() would silently go to the primary handle regardless of set_channel_id.
+            pubRaw = logos.callModule("liblogos_zone_sequencer_module",
+                                      "publish_to", [useChannelId, useKey, useCheckpoint, payload])
+        }
         var pubResult = callModuleParse(pubRaw)
 
         var inscriptionId = ""
@@ -320,14 +324,6 @@ Item {
         else
             appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
 
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_signing_key", [root.signingKeyHex])
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_checkpoint_path",
-                         [root.persistencePath + "/beacon.checkpoint"])
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_channel_id", [root.channelId])
-
         // Manifest module channel to primary Beacon channel on first successful inscription
         if (status === "ok" && source && source.length > 0
                 && root.moduleChannels[source]
@@ -336,6 +332,7 @@ Item {
         }
 
         root.pollBusy = false
+        return status === "ok"
     }
 
     // ── Broadcast channel announce (kept for future use; not exposed in UI) ───
@@ -391,9 +388,10 @@ Item {
                 if (!entry.cid) continue
                 appendActivity("queued from " + moduleName + ": " + entry.cid.substring(0, 16) + "…", "info")
                 root.pollBusy = false
-                inscribeCid(entry.cid, entry.label || entry.cid, moduleName)
+                var inscribed = inscribeCid(entry.cid, entry.label || entry.cid, moduleName)
                 root.pollBusy = true
-                logos.callModule(moduleName, "markInscribed", [entry.cid])
+                if (inscribed)
+                    logos.callModule(moduleName, "markInscribed", [entry.cid])
             }
         }
 

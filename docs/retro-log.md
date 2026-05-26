@@ -188,3 +188,8 @@ success; re-derive guard `!manifestedModules[source]` keeps it idempotent. Extra
 ## fail 2026-04-30 — pinCid "Invalid response" from installed .so with 2-arg signature
 
 QML calling `pinCid(cid, label, source)` (3 args) against installed .so that only registered 2-arg `pinCid(cid, label)`. Qt bridge silently rejected the call. Symptom: `callModuleParse` returned null → logged "error: pinCid Invalid response". Fix: rebuild + reinstall .so. Root cause: issue #12 was implemented in source but the installed .so was never updated in the previous session.
+
+## win 2026-05-21
+fix: beacon aligned with logos-module-builder b3f1d658 + RC3 SDK
+
+nixpkgs.follows required `...` in outputs destructuring (was erroring "unexpected argument 'nixpkgs'"). CMakeLists.txt hardcoded Nix store paths (logos-cpp-sdk + liblogos-headers) go stale after module-builder update — updated to new hashes. logos_api_stub.cpp: added logos_object.h include; dropped onEvent stub (BeaconPlugin doesn't use it, avoids SDK signature drift). 25/25 unit tests pass on Qt 6.9.3. Verified live — modules load, inscription flow works.
