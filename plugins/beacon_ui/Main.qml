@@ -26,6 +26,7 @@ Item {
     property string signingKeyHex:     ""
     property string persistencePath:   ""
     property bool   watchStash:        true   // always on; no UI toggle
+    property var    watchedSources:    []  // per-source whitelist for stash auto-inscription
     property bool   zoneSeqReady:      false
     property bool   settingsPanelOpen: false
 
@@ -398,10 +399,12 @@ Item {
                 cid = extractCid(e.detail)
             }
             if (cid !== "") {
-                appendActivity("detected " + cid + " from " + ((e.source && e.source !== "stash") ? e.source : "notes"), "info")
+                var src = (e.source && e.source !== "stash") ? e.source : "notes"
+                if (root.watchedSources.indexOf(src) === -1) continue   // not whitelisted
+                appendActivity("detected " + cid + " from " + src, "info")
                 var lbl = e.detail ? e.detail : ("stash upload " + cid.substring(0, 12))
                 root.pollBusy = false
-                inscribeCid(cid, lbl, (e.source && e.source !== "stash") ? e.source : "notes")
+                inscribeCid(cid, lbl, src)
                 root.pollBusy = true
             }
         }
@@ -464,6 +467,13 @@ Item {
         if (!cfg) return
 
         root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
+
+        var wsRaw = callModuleParse(logos.callModule("logos_beacon", "getWatchedSources", []))
+        if (wsRaw && Array.isArray(wsRaw.sources) && wsRaw.sources.length > 0)
+            root.watchedSources = wsRaw.sources
+        if (typeof sourcesInput !== "undefined")
+            sourcesInput.text = root.watchedSources.join("\n")
+
         root.persistencePath = cfg.persistencePath || ""
         root.channelLabel    = cfg.channelLabel    || "My Beacon"
 
@@ -814,6 +824,68 @@ Item {
                                     id: chCopyArea
                                     anchors.fill: parent; hoverEnabled: true
                                     onClicked: root.copyToClipboard(root.channelId)
+                                }
+                            }
+                        }
+                    }
+
+                    // Watched Sources row
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Text { text: "Watched Sources"; color: root.textSecondary; font.pixelSize: 11 }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 72
+                                color: root.bgPrimary
+                                radius: 4
+                                border.color: root.borderColor
+                                border.width: 1
+                                clip: true
+
+                                ScrollView {
+                                    anchors.fill: parent
+                                    anchors.margins: 6
+
+                                    TextArea {
+                                        id: sourcesInput
+                                        color: root.textPrimary
+                                        font.pixelSize: 12
+                                        font.family: "monospace"
+                                        wrapMode: TextArea.NoWrap
+                                        placeholderText: "notes\nkeeper"
+                                        placeholderTextColor: root.textMuted
+                                        background: null
+                                        text: root.watchedSources.join("\n")
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: 56; height: 32; radius: 4
+                                Layout.alignment: Qt.AlignTop
+                                color: srcSaveArea.pressed      ? root.accentPressed
+                                     : srcSaveArea.containsMouse ? root.accentHover : root.accentOrange
+                                Behavior on color { ColorAnimation { duration: 100 } }
+
+                                Text { anchors.centerIn: parent; text: "Save"; color: "#FFFFFF"; font.pixelSize: 12; font.bold: true }
+
+                                MouseArea {
+                                    id: srcSaveArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (typeof logos === "undefined" || !logos.callModule) return
+                                        logos.callModule("logos_beacon", "setWatchedSources", [sourcesInput.text])
+                                        root.watchedSources = sourcesInput.text.split("\n").filter(function(s){ return s.trim().length > 0 })
+                                    }
                                 }
                             }
                         }

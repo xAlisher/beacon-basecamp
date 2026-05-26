@@ -12,9 +12,10 @@
 #include <algorithm>
 
 // ── QSettings key prefix ──────────────────────────────────────────────────────
-static constexpr const char* kNodeUrlKey      = "beacon/nodeUrl";
-static constexpr const char* kWatchStashKey   = "beacon/watchStash";
-static constexpr const char* kChannelLabelKey = "beacon/channelLabel";
+static constexpr const char* kNodeUrlKey       = "beacon/nodeUrl";
+static constexpr const char* kWatchStashKey    = "beacon/watchStash";
+static constexpr const char* kChannelLabelKey  = "beacon/channelLabel";
+static constexpr const char* kWatchedSourcesKey = "beacon/watchedSources";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 QString BeaconPlugin::errorJson(const QString& msg)
@@ -52,6 +53,10 @@ void BeaconPlugin::initLogos(LogosAPI* api)
     }
 
     QDir().mkpath(m_persistencePath);
+
+    // Load watched sources whitelist; default to ["notes"] if never set.
+    QSettings s;
+    m_watchedSources = s.value(QLatin1String(kWatchedSourcesKey)).toStringList();
 
     loadLog();
 }
@@ -119,6 +124,32 @@ QString BeaconPlugin::setWatchStash(bool enabled)
     QSettings s;
     s.setValue(QLatin1String(kWatchStashKey), enabled);
     return okJson();
+}
+
+// ── setWatchedSources ─────────────────────────────────────────────────────────
+QString BeaconPlugin::setWatchedSources(const QString& newlineSeparated)
+{
+    m_watchedSources.clear();
+    const QStringList lines = newlineSeparated.split(QLatin1Char('\n'));
+    for (const QString& line : lines) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty())
+            m_watchedSources.append(trimmed);
+    }
+    QSettings s;
+    s.setValue(QLatin1String(kWatchedSourcesKey), m_watchedSources);
+    return okJson();
+}
+
+// ── getWatchedSources ─────────────────────────────────────────────────────────
+QString BeaconPlugin::getWatchedSources() const
+{
+    QJsonArray arr;
+    for (const QString& src : m_watchedSources)
+        arr.append(src);
+    QJsonObject o;
+    o[QStringLiteral("sources")] = arr;
+    return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
 
 // ── setChannelLabel ───────────────────────────────────────────────────────────

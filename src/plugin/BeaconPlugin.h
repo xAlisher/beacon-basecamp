@@ -31,6 +31,13 @@ public:
     // Persists beacon/watchStash. Returns {"ok":true}
     Q_INVOKABLE QString setWatchStash(bool enabled);
 
+    // Per-source whitelist for stash-watch auto-inscription.
+    // newlineSeparated: "notes\nkeycard" — only these sources are auto-inscribed.
+    // Default: ["notes"]. Returns {"ok":true}.
+    Q_INVOKABLE QString setWatchedSources(const QString& newlineSeparated);
+    // Returns {sources:["notes","keycard"]}
+    Q_INVOKABLE QString getWatchedSources() const;
+
     // Persists beacon/channelLabel. Returns {"ok":true}
     Q_INVOKABLE QString setChannelLabel(const QString& label);
 
@@ -95,4 +102,5 @@ private:
     QString     m_persistencePath;
     QString     m_signingKeyHex;
     QJsonArray  m_log;             // in-memory inscription log
+    QStringList m_watchedSources;  // sources auto-inscribed from stash events
 };
