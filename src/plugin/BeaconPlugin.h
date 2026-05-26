@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVariantList>
 #include <QJsonArray>
+class QNetworkAccessManager;
 
 #include "interface.h"
 
@@ -87,6 +88,13 @@ public:
     // Appends moduleName to manifest-log.json. Returns {"ok":true} or {"error":"..."}.
     Q_INVOKABLE QString recordManifest(const QString& moduleName);
 
+    // Searches recent finalized blocks for a ChannelInscribe tx targeting channelId.
+    // Returns {"txHash":"<hex>"} if found within [slotFrom, slotTo], {"txHash":""} if not.
+    Q_INVOKABLE QString findAnchorTx(const QString& nodeUrl,
+                                     const QString& channelId,
+                                     int slotFrom,
+                                     int slotTo);
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
     void inscriptionConfirmed(int entryIndex, const QString& inscriptionId,
@@ -103,4 +111,6 @@ private:
     QString     m_signingKeyHex;
     QJsonArray  m_log;             // in-memory inscription log
     QStringList m_watchedSources;  // sources auto-inscribed from stash events
+
+    QNetworkAccessManager* m_nam = nullptr;
 };

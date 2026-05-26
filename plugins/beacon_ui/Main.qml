@@ -33,6 +33,9 @@ Item {
     property bool   pollBusy:          false
     property var    manifestedModules: ({})   // module name → true, loaded from manifest-log.json
     property int    inscribedCount:    0
+    // Pending zone-message → mantle_tx.hash resolutions for module sub-channels.
+    // Each entry: {entryIndex, channelId, attempts}
+    property var    pendingResolutions: []
     property string channelLabel:      "My Beacon"   // kept for future use
     property string broadcastStatus:   ""             // kept for future use
 
@@ -310,18 +313,28 @@ Item {
             }
         }
 
-        logos.callModule("logos_beacon", "confirmInscription",
-                         [entryIndex, inscriptionId, status])
+        var isModuleChannel = useChannelId !== root.channelId
 
-        if (entryIndex >= 0 && entryIndex < logModel.count) {
-            logModel.setProperty(entryIndex, "inscriptionId", inscriptionId)
-            logModel.setProperty(entryIndex, "status", status)
-            if (status === "ok") root.inscribedCount++
+        if (!isModuleChannel || status !== "ok") {
+            // Primary channel or error: confirm immediately with whatever ID we have.
+            logos.callModule("logos_beacon", "confirmInscription",
+                             [entryIndex, inscriptionId, status])
+            if (entryIndex >= 0 && entryIndex < logModel.count) {
+                logModel.setProperty(entryIndex, "inscriptionId", inscriptionId)
+                logModel.setProperty(entryIndex, "status", status)
+                if (status === "ok") root.inscribedCount++
+            }
+        } else {
+            // Module sub-channel: zone_publish returns zone message hash, not mantle_tx.hash.
+            // Queue resolution — resolveAnchorTxs() will poll blocks until the real tx hash
+            // is found, then call confirmInscription with the correct ID.
+            var pending = root.pendingResolutions.slice()
+            pending.push({ entryIndex: entryIndex, channelId: useChannelId, attempts: 0 })
+            root.pendingResolutions = pending
+            appendActivity("[" + source + "] zone msg published — awaiting on-chain anchor…", "info")
         }
 
-        if (status === "ok")
-            appendActivity("[" + (source || "primary") + "] inscribed " + cid.substring(0,16) + "…", "success")
-        else
+        if (status !== "ok")
             appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
 
         // Manifest module channel to primary Beacon channel on first successful inscription
@@ -396,6 +409,75 @@ Item {
         }
 
         root.pollBusy = false
+    }
+
+    // ── Anchor tx resolution (module sub-channels) ────────────────────────────
+    // Polls /cryptarchia/blocks for the ChannelInscribe tx that anchors a module
+    // channel's zone messages on-chain, then updates the inscription log entry
+    // with the real mantle_tx.hash so the explorer URL works.
+    function resolveAnchorTxs() {
+        if (root.pendingResolutions.length === 0) return
+        if (typeof logos === "undefined" || !logos.callModule) return
+
+        var MAX_ATTEMPTS = 36  // 36 × 15s = 9 min before giving up
+        var SLOT_WINDOW  = 800 // search ≈800 slots (~13 min) back from current tip
+
+        var remaining = []
+        for (var i = 0; i < root.pendingResolutions.length; i++) {
+            var p = root.pendingResolutions[i]
+
+            // First confirm the zone message is finalized (visible in query_channel).
+            var qRaw = logos.callModule("liblogos_zone_sequencer_module",
+                                        "query_channel", [p.channelId, 1])
+            var msgs = callModuleParse(qRaw)
+            if (!Array.isArray(msgs) || msgs.length === 0) {
+                // Not yet finalized — check attempt count.
+                if (p.attempts < MAX_ATTEMPTS) {
+                    remaining.push({ entryIndex: p.entryIndex,
+                                     channelId:  p.channelId,
+                                     attempts:   p.attempts + 1 })
+                } else {
+                    appendActivity("anchor tx resolution timed out for entry " + p.entryIndex, "error")
+                }
+                continue
+            }
+
+            // Zone message is finalized. Now find the ChannelInscribe tx on-chain.
+            // Get current node tip slot to define search range.
+            var tipRaw = logos.callModule("liblogos_zone_sequencer_module",
+                                          "query_channel_paged", [p.channelId, "", 1])
+            var paged = callModuleParse(tipRaw)
+            var tipSlot = (paged && paged.cursor_slot) ? paged.cursor_slot : 0
+
+            var slotTo   = tipSlot > 0 ? tipSlot + 10 : 9999999
+            var slotFrom = slotTo - SLOT_WINDOW
+
+            var anchorRaw = logos.callModule("logos_beacon", "findAnchorTx",
+                                             [root.nodeUrl, p.channelId, slotFrom, slotTo])
+            var anchor = callModuleParse(anchorRaw)
+
+            if (anchor && anchor.txHash && anchor.txHash.length > 0) {
+                logos.callModule("logos_beacon", "confirmInscription",
+                                 [p.entryIndex, anchor.txHash, "ok"])
+                if (p.entryIndex >= 0 && p.entryIndex < logModel.count) {
+                    logModel.setProperty(p.entryIndex, "inscriptionId", anchor.txHash)
+                    logModel.setProperty(p.entryIndex, "status", "ok")
+                    root.inscribedCount++
+                }
+                appendActivity("anchor resolved: " + anchor.txHash.substring(0, 16) + "…", "success")
+            } else {
+                // Zone message visible but no anchor tx yet — keep retrying.
+                if (p.attempts < MAX_ATTEMPTS) {
+                    remaining.push({ entryIndex: p.entryIndex,
+                                     channelId:  p.channelId,
+                                     attempts:   p.attempts + 1 })
+                } else {
+                    appendActivity("anchor tx not found in blocks for entry " + p.entryIndex, "error")
+                }
+            }
+        }
+
+        root.pendingResolutions = remaining
     }
 
     // ── Log refresh ───────────────────────────────────────────────────────────
@@ -482,7 +564,10 @@ Item {
         interval: 10000
         running:  true   // always running; pollModules() checks keycardConnected internally
         repeat:   true
-        onTriggered: root.pollModules()
+        onTriggered: {
+            root.pollModules()
+            root.resolveAnchorTxs()
+        }
     }
 
     Timer {

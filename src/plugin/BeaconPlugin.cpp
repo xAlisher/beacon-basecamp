@@ -9,6 +9,10 @@
 #include <QDir>
 #include <QCryptographicHash>
 #include <QTextStream>
+#include <QtNetwork/QNetworkAccessManager>
+#include <QtNetwork/QNetworkReply>
+#include <QEventLoop>
+#include <QUrl>
 #include <algorithm>
 
 // ── QSettings key prefix ──────────────────────────────────────────────────────
@@ -349,6 +353,62 @@ QString BeaconPlugin::confirmInscription(int entryIndex,
     emit inscriptionConfirmed(entryIndex, inscriptionId, status);
 
     return okJson();
+}
+
+// ── findAnchorTx ──────────────────────────────────────────────────────────────
+QString BeaconPlugin::findAnchorTx(const QString& nodeUrl,
+                                    const QString& channelId,
+                                    int slotFrom,
+                                    int slotTo)
+{
+    QJsonObject result;
+    result[QStringLiteral("txHash")] = QString();
+
+    if (!m_nam)
+        m_nam = new QNetworkAccessManager(this);
+
+    QString url = QString("%1/cryptarchia/blocks?slot_from=%2&slot_to=%3")
+                      .arg(nodeUrl.endsWith('/') ? nodeUrl.chopped(1) : nodeUrl)
+                      .arg(slotFrom)
+                      .arg(slotTo);
+
+    QNetworkRequest req{QUrl(url)};
+    QNetworkReply* reply = m_nam->get(req);
+
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (reply->error() != QNetworkReply::NoError) {
+        reply->deleteLater();
+        return QJsonDocument(result).toJson(QJsonDocument::Compact);
+    }
+
+    QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    reply->deleteLater();
+
+    if (!doc.isArray())
+        return QJsonDocument(result).toJson(QJsonDocument::Compact);
+
+    // Walk blocks oldest→newest; return the first ChannelInscribe tx for channelId.
+    const QJsonArray blocks = doc.array();
+    for (const QJsonValue& bv : blocks) {
+        const QJsonArray txs = bv[QStringLiteral("transactions")].toArray();
+        for (const QJsonValue& tv : txs) {
+            const QJsonObject mtx  = tv[QStringLiteral("mantle_tx")].toObject();
+            const QString     hash = mtx[QStringLiteral("hash")].toString();
+            const QJsonArray  ops  = mtx[QStringLiteral("ops")].toArray();
+            for (const QJsonValue& ov : ops) {
+                const QJsonObject payload = ov[QStringLiteral("payload")].toObject();
+                if (payload[QStringLiteral("channel_id")].toString() == channelId) {
+                    result[QStringLiteral("txHash")] = hash;
+                    return QJsonDocument(result).toJson(QJsonDocument::Compact);
+                }
+            }
+        }
+    }
+
+    return QJsonDocument(result).toJson(QJsonDocument::Compact);
 }
 
 // ── getManifestLog ────────────────────────────────────────────────────────────
