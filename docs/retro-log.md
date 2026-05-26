@@ -189,6 +189,14 @@ success; re-derive guard `!manifestedModules[source]` keeps it idempotent. Extra
 
 QML calling `pinCid(cid, label, source)` (3 args) against installed .so that only registered 2-arg `pinCid(cid, label)`. Qt bridge silently rejected the call. Symptom: `callModuleParse` returned null → logged "error: pinCid Invalid response". Fix: rebuild + reinstall .so. Root cause: issue #12 was implemented in source but the installed .so was never updated in the previous session.
 
+## win 2026-05-26 — beacon#11 fix: module sub-channel routing + instant explorer URLs
+
+PR fix/11-module-channel-publish merged. Two-part fix:
+1. zone_sequencer single-handle guard blocked multi-channel publishing. Added `publish_to()` to zone-sequencer-module with `QMap<QString, void*> m_channelHandles` cache — each module sub-channel gets its own persistent handle, returns `mantle_tx.hash` directly.
+2. Option A (anchor polling) replaced with persistent handle approach — resolved "awaiting on-chain anchor..." indefinite wait that was too slow for demo. Explorer URLs now appear within seconds of inscription.
+Skills extracted: `zone-publish-hash-type-mismatch` (critical), `zone-seq-multi-channel-publish-to` (high).
+Added `clearInscriptionLog()` C++ invokable + "Clear" buttons inline with Log and Activity headers.
+
 ## win 2026-05-21
 fix: beacon aligned with logos-module-builder b3f1d658 + RC3 SDK
 
