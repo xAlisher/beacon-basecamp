@@ -396,10 +396,10 @@ QString BeaconPlugin::findExplorerTxHash(const QString& channelId,
     if (!blocksDoc.isArray())
         return QJsonDocument(result).toJson(QJsonDocument::Compact);
 
-    // mantle_tx.hash == explorer hash (confirmed; zone_sequencer TxHash is different)
-    // We read it directly from the block scan — no need for a separate explorer round-trip.
+    // NOTE: mantle_tx.hash from node != explorer hash (node may compute Poseidon2 differently).
+    // Step 1: find the block containing our channelId inscription via node scan.
+    // Step 2: query explorer block API to get the real explorer tx hash.
     QString blockHeaderId;
-    QString txHash;
 
     for (const QJsonValue& bv : blocksDoc.array()) {
         const QJsonObject block = bv.toObject();
@@ -410,8 +410,6 @@ QString BeaconPlugin::findExplorerTxHash(const QString& channelId,
             for (const QJsonValue& ov : ops) {
                 if (ov[QStringLiteral("payload")][QStringLiteral("channel_id")].toString() == channelId) {
                     blockHeaderId = bid;
-                    txHash        = tv[QStringLiteral("mantle_tx")]
-                                      [QStringLiteral("hash")].toString();
                     goto found_block;
                 }
             }
@@ -420,6 +418,34 @@ QString BeaconPlugin::findExplorerTxHash(const QString& channelId,
     return QJsonDocument(result).toJson(QJsonDocument::Compact);  // not found
 
 found_block:
+    // ── Step 2: get real tx hash from explorer block API ─────────────────────
+    QNetworkReply* forkReply = getReply(
+        explorerBaseUrl() + QStringLiteral("/web/explorer/api/v1/fork-choice"));
+    int fork = 0;
+    if (forkReply->error() == QNetworkReply::NoError) {
+        fork = QJsonDocument::fromJson(forkReply->readAll())[QStringLiteral("fork")].toInt(0);
+    }
+    forkReply->deleteLater();
+
+    QNetworkReply* explorerReply = getReply(
+        QString("%1/web/explorer/api/v1/blocks/%2?fork=%3")
+            .arg(explorerBaseUrl(), blockHeaderId).arg(fork));
+
+    QString txHash;
+    if (explorerReply->error() == QNetworkReply::NoError) {
+        QJsonDocument ed = QJsonDocument::fromJson(explorerReply->readAll());
+        for (const QJsonValue& tv : ed[QStringLiteral("transactions")].toArray()) {
+            for (const QJsonValue& ov : tv[QStringLiteral("operations")].toArray()) {
+                if (ov[QStringLiteral("content")][QStringLiteral("channel_id")].toString() == channelId) {
+                    txHash = tv[QStringLiteral("hash")].toString();
+                    break;
+                }
+            }
+            if (!txHash.isEmpty()) break;
+        }
+    }
+    explorerReply->deleteLater();
+
     if (!txHash.isEmpty()) {
         result[QStringLiteral("txHash")]    = txHash;
         result[QStringLiteral("blockHash")] = blockHeaderId;
