@@ -293,12 +293,12 @@ Item {
 
         var pubRaw
         if (useChannelId === root.channelId) {
-            // Primary beacon channel — persistent sequencer handle
+            // Primary beacon channel — use the persistent sequencer handle (fast path)
             pubRaw = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
         } else {
-            // Module sub-channel — pass empty checkpoint (no stale-checkpoint backfill)
+            // Module sub-channel — use stateless publish_to so the correct channel is used.
             pubRaw = logos.callModule("liblogos_zone_sequencer_module",
-                                      "publish_to", [useChannelId, useKey, "", payload])
+                                      "publish_to", [useChannelId, useKey, useCheckpoint, payload])
         }
         var pubResult = callModuleParse(pubRaw)
 
@@ -334,6 +334,7 @@ Item {
         root.pendingFinalizations = updatedPF
 
         appendActivity("[" + (source || "primary") + "] submitted — " + cid.substring(0,16) + "… awaiting finalization", "info")
+
 
         // Manifest module channel to primary Beacon channel on first successful inscription
         if (source && source.length > 0
@@ -500,9 +501,7 @@ Item {
         interval: 10000
         running:  true   // always running; pollModules() checks keycardConnected internally
         repeat:   true
-        onTriggered: {
-            root.pollModules()
-        }
+        onTriggered: root.pollModules()
     }
 
     Timer {
