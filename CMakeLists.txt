@@ -29,7 +29,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 # ── Qt ────────────────────────────────────────────────────────────────────────
 list(PREPEND CMAKE_PREFIX_PATH "$ENV{HOME}/Qt/6.9.3/gcc_64")
-find_package(Qt6 REQUIRED COMPONENTS Core Qml)
+find_package(Qt6 REQUIRED COMPONENTS Core Qml Network)
 qt_standard_project_setup()
 
 # ── Nix store paths ───────────────────────────────────────────────────────────
@@ -72,6 +72,7 @@ target_include_directories(logos_beacon_plugin PRIVATE
 target_link_libraries(logos_beacon_plugin PRIVATE
     Qt6::Core
     Qt6::Qml
+    Qt6::Network
     "${LOGOS_CPP_SDK}/lib/liblogos_sdk.a"
     dl pthread
 )
@@ -105,6 +106,7 @@ target_include_directories(test_beacon_plugin PRIVATE
 target_link_libraries(test_beacon_plugin PRIVATE
     Qt6::Core
     Qt6::Test
+    Qt6::Network
     dl pthread
 )
 

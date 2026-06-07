@@ -4,6 +4,7 @@
 #include <QString>
 #include <QVariantList>
 #include <QJsonArray>
+class QNetworkAccessManager;
 
 #include "interface.h"
 
@@ -45,14 +46,23 @@ public:
     // Returns {configured:bool, seenCids:N, inscribedCids:N}
     Q_INVOKABLE QString getStatus() const;
 
-    // Returns JSON array [{cid, inscriptionId, label, ts, status}], last 100
+    // Returns JSON array [{cid, inscriptionId, label, source, ts, status,
+    //   slotFrom, libAtSubmit}], last 100 entries.
     Q_INVOKABLE QString getInscriptionLog() const;
+
+    // ── Node info ────────────────────────────────────────────────────────────
+    // Queries GET {nodeUrl}/cryptarchia/info.
+    // Returns {"slot":N,"lib_slot":N,"mode":"Online"} or {"error":"..."}
+    Q_INVOKABLE QString getNodeInfo();
 
     // ── Inscription ──────────────────────────────────────────────────────────
     // Checks for duplicate, appends pending entry, saves.
+    // slotFrom: node slot at time of inscription (for finalization progress).
+    // libAtSubmit: lib_slot at time of inscription (progress bar start).
     // Returns {"ok":true,"entryIndex":N} | {"ok":true,"duplicate":true} | {"error":"..."}
     Q_INVOKABLE QString pinCid(const QString& cid, const QString& label,
-                               const QString& source = "");
+                               const QString& source = "",
+                               int slotFrom = 0, int libAtSubmit = 0);
 
     // Derives a per-module signing key via SHA256(master_key || module_name).
     // Returns {"signingKey":"<64-char-hex>"} or {"error":"key not set"}
@@ -64,7 +74,9 @@ public:
     // Creates {persistencePath}/checkpoints/ directory. Returns {"ok":true} or {"error":"..."}
     Q_INVOKABLE QString ensureCheckpointsDir();
 
-    // Called from QML after zone seq responds. Updates entry status.
+    // Called from QML to update entry status at any lifecycle stage.
+    // status: "submitted" | "finalizing" | "confirmed" | "failed" | "error"
+    // inscriptionId: explorer TX hash when status="confirmed", empty otherwise.
     // Returns {"ok":true} or {"error":"..."}
     Q_INVOKABLE QString confirmInscription(int entryIndex,
                                            const QString& inscriptionId,
@@ -78,6 +90,9 @@ public:
     // Returns {"ok":true}
     Q_INVOKABLE QString clearSigningKey();
 
+    // Clears the in-memory inscription log and removes inscription-log.json. Returns {"ok":true}.
+    Q_INVOKABLE QString clearInscriptionLog();
+
     // Debug: appends msg to /tmp/beacon_plugin.diag with timestamp. Returns {"ok":true}.
     Q_INVOKABLE QString diagLog(const QString& msg);
 
@@ -87,6 +102,25 @@ public:
     // Appends moduleName to manifest-log.json. Returns {"ok":true} or {"error":"..."}.
     Q_INVOKABLE QString recordManifest(const QString& moduleName);
 
+    // Searches recent finalized blocks for a ChannelInscribe tx targeting channelId.
+    // Returns {"txHash":"<hex>"} if found within [slotFrom, slotTo], {"txHash":""} if not.
+    Q_INVOKABLE QString findAnchorTx(const QString& nodeUrl,
+                                     const QString& channelId,
+                                     int slotFrom,
+                                     int slotTo);
+
+    // Scans node blocks [slotFrom, lib_slot] for a ChannelInscribe tx matching channelId,
+    // then queries explorer /blocks/{blockId}?fork=N to get the real explorer TX hash.
+    // slotFrom: lower bound for block scan — pass the slot recorded at inscription time.
+    // Returns {"txHash":"<hex>","blockHash":"<hex>","found":true} or {"found":false,...}
+    Q_INVOKABLE QString findExplorerTxHash(const QString& channelId,
+                                            int slotFrom, int slotTo);
+
+    // Searches finalized blocks [slotFrom, lib_slot] for a tx whose mantle_tx.hash equals txHash.
+    // slotFrom: slot recorded at inscription time — prevents scanning the entire chain.
+    // Returns {"blockHash":"<header.id>","found":true} or {"blockHash":"","found":false}.
+    Q_INVOKABLE QString getBlockForTx(const QString& txHash, int slotFrom = 0);
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& data);
     void inscriptionConfirmed(int entryIndex, const QString& inscriptionId,
@@ -95,6 +129,8 @@ signals:
 private:
     void     loadLog();
     void     saveLog();
+    QString  nodeUrl() const;
+    QString  explorerBaseUrl() const;
 
     static QString errorJson(const QString& msg);
     static QString okJson();
@@ -103,4 +139,6 @@ private:
     QString     m_signingKeyHex;
     QJsonArray  m_log;             // in-memory inscription log
     QStringList m_watchedSources;  // sources auto-inscribed from stash events
+
+    QNetworkAccessManager* m_nam = nullptr;
 };

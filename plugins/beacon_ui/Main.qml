@@ -36,6 +36,11 @@ Item {
     property string channelLabel:      "My Beacon"   // kept for future use
     property string broadcastStatus:   ""             // kept for future use
 
+    // ── Inscription lifecycle state ───────────────────────────────────────────
+    property int  currentLibSlot:      0
+    property var  pendingFinalizations: []
+    property bool finalizationBusy:    false
+
     // ── Screen state ──────────────────────────────────────────────────────────
     property string currentScreen: "landing"   // "landing" | "main"
 
@@ -116,7 +121,7 @@ Item {
         logos.callModule("liblogos_zone_sequencer_module", "set_node_url",
                          [root.nodeUrl])
         logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path",
-                         [root.persistencePath + "/beacon.checkpoint"])
+                         [""])  // empty = bootstrap fresh, no stale-checkpoint backfill
 
         var chRaw = logos.callModule("liblogos_zone_sequencer_module",
                                      "get_channel_id", [])
@@ -147,7 +152,7 @@ Item {
         // temporary signing-key switch in setupModuleChannel doesn't leave stale state
         logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [root.signingKeyHex])
         logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path",
-                         [root.persistencePath + "/beacon.checkpoint"])
+                         [""])  // empty = no stale-checkpoint backfill
         logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [""])
         var chRaw2 = logos.callModule("liblogos_zone_sequencer_module", "get_channel_id", [])
         var ch2 = callModuleParse(chRaw2)
@@ -222,27 +227,36 @@ Item {
         if (root.pollBusy) return
         root.pollBusy = true
 
-        var useKey, useChannelId, useCheckpoint
+        // Capture node slot / lib_slot for slotFrom, libAtSubmit, and progress tracking
+        var nodeSlot = 0
+        var libSlot  = 0
+        var infoRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
+        var info = callModuleParse(infoRaw)
+        if (info && info.slot) {
+            nodeSlot = info.slot
+            libSlot  = info.lib_slot || 0
+            root.currentLibSlot = libSlot
+        }
+
+        var useKey, useChannelId
         if (source && source.length > 0) {
             setupModuleChannel(source)
             var mc = root.moduleChannels[source]
             if (mc) {
-                useKey        = mc.signingKey
-                useChannelId  = mc.channelId
-                useCheckpoint = root.persistencePath + "/checkpoints/" + source + ".checkpoint"
+                useKey       = mc.signingKey
+                useChannelId = mc.channelId
             } else {
                 appendActivity("using primary channel for " + source, "info")
-                useKey        = root.signingKeyHex
-                useChannelId  = root.channelId
-                useCheckpoint = root.persistencePath + "/beacon.checkpoint"
+                useKey       = root.signingKeyHex
+                useChannelId = root.channelId
             }
         } else {
-            useKey        = root.signingKeyHex
-            useChannelId  = root.channelId
-            useCheckpoint = root.persistencePath + "/beacon.checkpoint"
+            useKey       = root.signingKeyHex
+            useChannelId = root.channelId
         }
 
-        var pinRaw = logos.callModule("logos_beacon", "pinCid", [cid, label, source || ""])
+        var pinRaw = logos.callModule("logos_beacon", "pinCid",
+                                      [cid, label, source || "", nodeSlot, libSlot])
         var pin    = callModuleParse(pinRaw)
 
         if (!pin || pin.error) {
@@ -263,7 +277,9 @@ Item {
             source:        source || "",
             tsStr:         Qt.formatDateTime(now, "HH:mm:ss"),
             inscriptionId: "",
-            status:        "pending"
+            status:        "queued",
+            slotFrom:      nodeSlot,
+            libAtSubmit:   libSlot
         })
 
         var payload = JSON.stringify({
@@ -281,14 +297,10 @@ Item {
             pubRaw = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
         } else {
             // Module sub-channel — use stateless publish_to so the correct channel is used.
-            // publish() would silently go to the primary handle regardless of set_channel_id.
             pubRaw = logos.callModule("liblogos_zone_sequencer_module",
                                       "publish_to", [useChannelId, useKey, useCheckpoint, payload])
         }
         var pubResult = callModuleParse(pubRaw)
-
-        var inscriptionId = ""
-        var status        = "error"
 
         var isError = false
         if (typeof pubResult === 'string') {
@@ -297,42 +309,42 @@ Item {
             isError = true
         }
 
-        if (!isError) {
-            if (typeof pubResult === 'string') {
-                inscriptionId = pubResult
-                status        = "ok"
-            } else if (pubResult && pubResult.inscriptionId) {
-                inscriptionId = pubResult.inscriptionId
-                status        = "ok"
-            } else if (pubResult && pubResult.id) {
-                inscriptionId = pubResult.id
-                status        = "ok"
-            }
-        }
-
-        logos.callModule("logos_beacon", "confirmInscription",
-                         [entryIndex, inscriptionId, status])
-
-        if (entryIndex >= 0 && entryIndex < logModel.count) {
-            logModel.setProperty(entryIndex, "inscriptionId", inscriptionId)
-            logModel.setProperty(entryIndex, "status", status)
-            if (status === "ok") root.inscribedCount++
-        }
-
-        if (status === "ok")
-            appendActivity("[" + (source || "primary") + "] inscribed " + cid.substring(0,16) + "…", "success")
-        else
+        if (isError) {
+            logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "failed"])
+            if (entryIndex >= 0 && entryIndex < logModel.count)
+                logModel.setProperty(entryIndex, "status", "failed")
             appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
+            root.pollBusy = false
+            return false
+        }
+
+        // Submitted — deferred confirmation via finalizationTimer (block scan → real explorer hash)
+        logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "submitted"])
+        if (entryIndex >= 0 && entryIndex < logModel.count)
+            logModel.setProperty(entryIndex, "status", "submitted")
+
+        var updatedPF = root.pendingFinalizations.slice()
+        updatedPF.push({
+            entryIndex:  entryIndex,
+            channelId:   useChannelId,
+            slotFrom:    nodeSlot,
+            libAtSubmit: libSlot,
+            cid:         cid
+        })
+        root.pendingFinalizations = updatedPF
+
+        appendActivity("[" + (source || "primary") + "] submitted — " + cid.substring(0,16) + "… awaiting finalization", "info")
+
 
         // Manifest module channel to primary Beacon channel on first successful inscription
-        if (status === "ok" && source && source.length > 0
+        if (source && source.length > 0
                 && root.moduleChannels[source]
                 && !root.manifestedModules[source]) {
             inscribeManifest(source, root.moduleChannels[source].channelId)
         }
 
         root.pollBusy = false
-        return status === "ok"
+        return true
     }
 
     // ── Broadcast channel announce (kept for future use; not exposed in UI) ───
@@ -398,6 +410,7 @@ Item {
         root.pollBusy = false
     }
 
+    // ── Anchor tx resolution (module sub-channels) ────────────────────────────
     // ── Log refresh ───────────────────────────────────────────────────────────
     function refreshLog() {
         if (typeof logos === "undefined" || !logos.callModule) return
@@ -417,9 +430,11 @@ Item {
                 source:        e.source || "",
                 tsStr:         Qt.formatDateTime(ts, "HH:mm:ss"),
                 inscriptionId: e.inscriptionId || "",
-                status:        e.status || "pending"
+                status:        e.status || "pending",
+                slotFrom:      e.slotFrom    || 0,
+                libAtSubmit:   e.libAtSubmit || 0
             })
-            if (e.status === "ok") count++
+            if (e.status === "ok" || e.status === "confirmed") count++
         }
         root.inscribedCount = count
     }
@@ -474,6 +489,10 @@ Item {
         nodeUrlInput.text = root.nodeUrl
 
         refreshLog()
+
+        var niRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
+        var ni = callModuleParse(niRaw)
+        if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
     }
 
     // ── Timers ────────────────────────────────────────────────────────────────
@@ -492,6 +511,89 @@ Item {
         onTriggered: {
             root.refreshLog()
             root.refreshModules()
+            // Keep currentLibSlot fresh for in-flight progress bars
+            var niRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
+            var ni = root.callModuleParse(niRaw)
+            if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
+        }
+    }
+
+    // ── Finalization poll — scans blocks for real explorer TX hash ────────────
+    Timer {
+        id: finalizationTimer
+        interval: 6000
+        running:  true
+        repeat:   true
+        onTriggered: {
+            if (root.pendingFinalizations.length === 0) return
+            if (root.finalizationBusy) return
+            if (typeof logos === "undefined" || !logos.callModule) return
+            root.finalizationBusy = true
+
+            var niRaw2 = logos.callModule("logos_beacon", "getNodeInfo", [])
+            var ni2 = root.callModuleParse(niRaw2)
+            if (ni2 && ni2.lib_slot) root.currentLibSlot = ni2.lib_slot
+            var libNow = root.currentLibSlot
+
+            var remaining = []
+            var pf = root.pendingFinalizations
+            for (var i = 0; i < pf.length; i++) {
+                var item = pf[i]
+
+                // Need lib_slot to have advanced past slotFrom for the tx to be finalized
+                if (libNow <= item.slotFrom) {
+                    // Update to "finalizing" once node slot has passed slotFrom
+                    if (libNow > 0 && item.slotFrom > 0
+                            && item.entryIndex >= 0 && item.entryIndex < logModel.count) {
+                        var curSt = logModel.get(item.entryIndex).status
+                        if (curSt === "submitted" || curSt === "queued") {
+                            logModel.setProperty(item.entryIndex, "status", "finalizing")
+                            logos.callModule("logos_beacon", "confirmInscription",
+                                            [item.entryIndex, "", "finalizing"])
+                        }
+                    }
+                    remaining.push(item)
+                    continue
+                }
+
+                var slotTo = libNow
+                var fRaw = logos.callModule("logos_beacon", "findExplorerTxHash",
+                                            [item.channelId, item.slotFrom, slotTo])
+                var fResult = root.callModuleParse(fRaw)
+
+                if (fResult && fResult.found === true
+                        && fResult.txHash && fResult.txHash.length > 0) {
+                    // Confirmed — store real explorer hash
+                    logos.callModule("logos_beacon", "confirmInscription",
+                                    [item.entryIndex, fResult.txHash, "confirmed"])
+                    if (item.entryIndex >= 0 && item.entryIndex < logModel.count) {
+                        logModel.setProperty(item.entryIndex, "inscriptionId", fResult.txHash)
+                        logModel.setProperty(item.entryIndex, "status", "confirmed")
+                    }
+                    root.inscribedCount++
+                    appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  " + fResult.txHash.substring(0, 16) + "…", "success")
+                } else if (slotTo > item.slotFrom + 3000) {
+                    // Timed out — ~50 min of trying without success
+                    logos.callModule("logos_beacon", "confirmInscription",
+                                    [item.entryIndex, "", "failed"])
+                    if (item.entryIndex >= 0 && item.entryIndex < logModel.count)
+                        logModel.setProperty(item.entryIndex, "status", "failed")
+                    appendActivity("failed (timeout): " + item.cid.substring(0, 16) + "…", "error")
+                } else {
+                    // Still scanning — mark finalizing if not already
+                    if (item.entryIndex >= 0 && item.entryIndex < logModel.count) {
+                        var st2 = logModel.get(item.entryIndex).status
+                        if (st2 !== "finalizing") {
+                            logModel.setProperty(item.entryIndex, "status", "finalizing")
+                            logos.callModule("logos_beacon", "confirmInscription",
+                                            [item.entryIndex, "", "finalizing"])
+                        }
+                    }
+                    remaining.push(item)
+                }
+            }
+            root.pendingFinalizations = remaining
+            root.finalizationBusy = false
         }
     }
 
@@ -528,6 +630,33 @@ Item {
                     appendActivity("zone sequencer ready — " + root.channelId.substring(0,16) + "…", "success")
                     root.currentScreen     = "main"
                     root.refreshModules()
+
+                    // Re-populate pendingFinalizations for any in-flight inscriptions
+                    // (handles beacon restart while inscriptions were in submitted/finalizing state)
+                    var restored = []
+                    for (var ri = 0; ri < logModel.count; ri++) {
+                        var le = logModel.get(ri)
+                        if ((le.status === "submitted" || le.status === "finalizing" || le.status === "queued")
+                                && le.slotFrom > 0) {
+                            var useChId = root.channelId
+                            if (le.source && le.source.length > 0) {
+                                setupModuleChannel(le.source)
+                                var rmc = root.moduleChannels[le.source]
+                                if (rmc) useChId = rmc.channelId
+                            }
+                            restored.push({
+                                entryIndex:  ri,
+                                channelId:   useChId,
+                                slotFrom:    le.slotFrom,
+                                libAtSubmit: le.libAtSubmit || 0,
+                                cid:         le.cid
+                            })
+                        }
+                    }
+                    if (restored.length > 0) {
+                        root.pendingFinalizations = restored
+                        appendActivity("resumed " + restored.length + " in-flight inscription(s)", "info")
+                    }
                 } else {
                     root.keycardAuthStatus = "error"
                 }
@@ -570,6 +699,7 @@ Item {
         keycardAuthPollTimer.stop()
         cardCheckTimer.stop()
         stashPollTimer.stop()
+        finalizationTimer.stop()
     }
 
     // ── Models ────────────────────────────────────────────────────────────────
@@ -1136,6 +1266,23 @@ Item {
                                 }
                             }
                         }
+
+                        Text {
+                            text: "Clear"
+                            font.pixelSize: 11
+                            color: clearLogArea.containsMouse ? root.textSecondary : root.textMuted
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            MouseArea {
+                                id: clearLogArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    logos.callModule("logos_beacon", "clearInscriptionLog", [])
+                                    logModel.clear()
+                                }
+                            }
+                        }
                     }
 
                     Rectangle {
@@ -1164,36 +1311,165 @@ Item {
                             spacing: 2
                             onCountChanged: Qt.callLater(() => logListView.positionViewAtEnd())
 
-                            delegate: TextEdit {
+                            delegate: Item {
+                                id: logEntry
+                                required property int    index
                                 required property string cid
                                 required property string label
                                 required property string source
                                 required property string tsStr
                                 required property string inscriptionId
                                 required property string status
+                                required property int    slotFrom
+                                required property int    libAtSubmit
 
                                 width: logListView.width
-                                text: {
-                                    var fname = label
-                                    if (label.indexOf("Logos Storage: ") === 0) {
-                                        var parts = label.split(" → ")
-                                        fname = parts[0].replace("Logos Storage: ", "")
-                                    }
-                                    var chain = (source && source !== "primary")
-                                        ? "[" + source + " → stash → Logos Storage]"
-                                        : "[primary]"
-                                    return "[" + tsStr + "] Inscribed " + (cid.length > 0 ? cid.substring(0, 12) : "unknown") + "… for " + fname + " " + chain
+                                implicitHeight: entryCol.implicitHeight + 10
+
+                                // Progress: lib advancing from libAtSubmit toward slotFrom
+                                property real progressVal: {
+                                    if (status === "confirmed" || status === "ok") return 1.0
+                                    if (status === "failed" || status === "error") return 0.0
+                                    if (slotFrom <= 0 || libAtSubmit <= 0) return 0.0
+                                    var total = slotFrom - libAtSubmit
+                                    if (total <= 0) return 0.0
+                                    var elapsed = root.currentLibSlot - libAtSubmit
+                                    return Math.min(1.0, Math.max(0.0, elapsed / total))
                                 }
-                                color: status === "ok"    ? root.successGreen
-                                     : status === "error" ? root.errorRed
-                                     : root.warningYellow
-                                font.pixelSize: 11
-                                font.family: "Courier New, monospace"
-                                wrapMode: Text.WrapAnywhere
-                                readOnly: true
-                                selectByMouse: true
-                                selectedTextColor: root.bgPrimary
-                                selectionColor: root.textSecondary
+
+                                // Remaining slots → ~M:SS estimate
+                                property string timeEst: {
+                                    if (status === "confirmed" || status === "ok"
+                                            || status === "failed" || status === "error") return ""
+                                    if (slotFrom <= 0 || root.currentLibSlot <= 0) return ""
+                                    var rem = slotFrom - root.currentLibSlot
+                                    if (rem <= 0) return ""
+                                    var mins = Math.floor(rem / 60)
+                                    var secs = rem % 60
+                                    return "~" + mins + ":" + (secs < 10 ? "0" : "") + secs
+                                }
+
+                                property string explorerUrl:
+                                    inscriptionId.length > 0
+                                    ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + inscriptionId
+                                    : ""
+
+                                property bool inFlight: status === "queued"
+                                                     || status === "submitted"
+                                                     || status === "finalizing"
+                                property bool isDone:   status === "confirmed" || status === "ok"
+                                property bool isFailed: status === "failed" || status === "error"
+
+                                ColumnLayout {
+                                    id: entryCol
+                                    anchors { left: parent.left; right: parent.right
+                                              top: parent.top; topMargin: 4 }
+                                    spacing: 3
+
+                                    // Line 1: [time] label   source
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+
+                                        Text {
+                                            text: "[" + tsStr + "] " + (label.length > 0 ? label : cid.substring(0, 20) + "…")
+                                            font.pixelSize: 11
+                                            font.family: "Courier New, monospace"
+                                            color: logEntry.isDone   ? root.successGreen
+                                                 : logEntry.isFailed ? root.errorRed
+                                                 : root.textPrimary
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+
+                                        Text {
+                                            visible: source.length > 0
+                                            text: source
+                                            font.pixelSize: 9
+                                            color: root.textMuted
+                                        }
+                                    }
+
+                                    // Line 2: CID  +  progress bar / hash + copy URL / failed
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+
+                                        Text {
+                                            text: cid.length > 0 ? cid.substring(0, 20) + "…" : "…"
+                                            font.pixelSize: 10
+                                            font.family: "Courier New, monospace"
+                                            color: root.textMuted
+                                        }
+
+                                        // Progress bar (in-flight only)
+                                        Rectangle {
+                                            visible: logEntry.inFlight
+                                            Layout.fillWidth: true
+                                            height: 4; radius: 2
+                                            color: root.bgSecondary
+
+                                            Rectangle {
+                                                width: parent.width * logEntry.progressVal
+                                                height: parent.height; radius: parent.radius
+                                                color: root.accentOrange
+                                                Behavior on width { NumberAnimation { duration: 600 } }
+                                            }
+                                        }
+
+                                        // Time estimate (in-flight, while we have an estimate)
+                                        Text {
+                                            visible: logEntry.inFlight && logEntry.timeEst.length > 0
+                                            text: logEntry.timeEst
+                                            font.pixelSize: 10
+                                            color: root.textMuted
+                                        }
+
+                                        // Truncated hash (confirmed)
+                                        Text {
+                                            visible: logEntry.isDone && inscriptionId.length > 0
+                                            text: inscriptionId.substring(0, 16) + "…"
+                                            font.pixelSize: 10
+                                            font.family: "Courier New, monospace"
+                                            color: root.successGreen
+                                        }
+
+                                        // Copy URL button (confirmed)
+                                        Rectangle {
+                                            visible: logEntry.isDone && logEntry.explorerUrl.length > 0
+                                            height: 18
+                                            implicitWidth: copyUrlLabel.implicitWidth + 14
+                                            radius: 3
+                                            color: copyUrlArea.pressed      ? root.accentPressed
+                                                 : copyUrlArea.containsMouse ? root.accentHover : root.bgSecondary
+                                            border.color: root.borderColor; border.width: 1
+                                            Behavior on color { ColorAnimation { duration: 80 } }
+
+                                            Text {
+                                                id: copyUrlLabel
+                                                anchors.centerIn: parent
+                                                text: "copy URL"
+                                                font.pixelSize: 9
+                                                color: root.textPrimary
+                                            }
+
+                                            MouseArea {
+                                                id: copyUrlArea
+                                                anchors.fill: parent
+                                                hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.copyToClipboard(logEntry.explorerUrl)
+                                            }
+                                        }
+
+                                        // Failed label
+                                        Text {
+                                            visible: logEntry.isFailed
+                                            text: "failed"
+                                            font.pixelSize: 10
+                                            color: root.errorRed
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1234,6 +1510,20 @@ Item {
                                 }
                                 root.copyToClipboard(lines.join("\n"))
                             }
+                        }
+                    }
+
+                    Text {
+                        text: "Clear"
+                        font.pixelSize: 11
+                        color: clearActArea.containsMouse ? root.textSecondary : root.textMuted
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                        MouseArea {
+                            id: clearActArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: activityLogModel.clear()
                         }
                     }
                 }

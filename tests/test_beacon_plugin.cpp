@@ -189,7 +189,7 @@ private slots:
         QCOMPARE(log.size(), 1);
         QCOMPARE(log[0].toObject()["cid"].toString(),
                  QString("QmTestCid1111111111111111111111111111111111111111"));
-        QCOMPARE(log[0].toObject()["status"].toString(), QString("pending"));
+        QCOMPARE(log[0].toObject()["status"].toString(), QString("queued"));
         QCOMPARE(log[0].toObject()["label"].toString(), QString("test label"));
     }
 
@@ -202,8 +202,15 @@ private slots:
         p.initLogos(nullptr);
 
         const QString cid = "QmTestCid1111111111111111111111111111111111111111";
-        p.pinCid(cid, "first");
+        auto first = parseObj(p.pinCid(cid, "first"));
+        int idx = first["entryIndex"].toInt();
 
+        // Confirm with real inscriptionId — marks entry as on-chain
+        p.confirmInscription(idx,
+            "aabbcc1234567890aabbcc1234567890aabbcc1234567890aabbcc1234567890",
+            "confirmed");
+
+        // Second pinCid for same confirmed CID must return duplicate
         auto r = parseObj(p.pinCid(cid, "second attempt"));
         QVERIFY(r["ok"].toBool());
         QVERIFY(r["duplicate"].toBool());
@@ -483,6 +490,156 @@ private slots:
         auto r = parseObj(p.ensureCheckpointsDir());
         QVERIFY(r["ok"].toBool());
         QVERIFY(QDir(tmp.path() + "/checkpoints").exists());
+    }
+    // ── inscription lifecycle: slotFrom / libAtSubmit ────────────────────────
+
+    void testPinCidStoresSlotFrom()
+    {
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseObj(p.pinCid("QmSlotCid111111111111111111111111111111111111111",
+                                   "label", "keeper", 4711799, 4711345));
+        QVERIFY(r["ok"].toBool());
+        QVERIFY(!r.contains("duplicate"));
+
+        auto log = parseArr(p.getInscriptionLog());
+        QCOMPARE(log.size(), 1);
+        QJsonObject e = log[0].toObject();
+        QCOMPARE(e["slotFrom"].toInt(),    4711799);
+        QCOMPARE(e["libAtSubmit"].toInt(), 4711345);
+        QCOMPARE(e["status"].toString(),   QString("queued"));
+    }
+
+    void testPinCidZeroSlotFromIsValid()
+    {
+        // slotFrom=0 is valid (node info unavailable at time of pinCid)
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto r = parseObj(p.pinCid("QmSlotCid222222222222222222222222222222222222222",
+                                   "label", "keeper", 0, 0));
+        QVERIFY(r["ok"].toBool());
+        auto log = parseArr(p.getInscriptionLog());
+        QCOMPARE(log[0].toObject()["slotFrom"].toInt(), 0);
+    }
+
+    void testConfirmInscriptionNewStatuses()
+    {
+        // Verify all lifecycle statuses persist correctly
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto pin = parseObj(p.pinCid("QmStateCid11111111111111111111111111111111111111", "x"));
+        int idx = pin["entryIndex"].toInt();
+
+        const QStringList states = {"queued","submitted","finalizing","confirmed","failed"};
+        for (const QString& st : states) {
+            QString id = (st == "confirmed") ? "aabbcc1234567890aabbcc1234567890aabbcc1234567890aabbcc1234567890" : "";
+            auto r = parseObj(p.confirmInscription(idx, id, st));
+            QVERIFY2(r["ok"].toBool(), qPrintable("status=" + st));
+            auto log = parseArr(p.getInscriptionLog());
+            QCOMPARE(log[idx].toObject()["status"].toString(), st);
+        }
+    }
+
+    void testGetStatusCountsConfirmedAndOk()
+    {
+        // Both "confirmed" and legacy "ok" count toward inscribedCids
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        auto p1 = parseObj(p.pinCid("QmCountCid1111111111111111111111111111111111111", "a"));
+        auto p2 = parseObj(p.pinCid("QmCountCid2222222222222222222222222222222222222", "b"));
+        auto p3 = parseObj(p.pinCid("QmCountCid3333333333333333333333333333333333333", "c"));
+
+        p.confirmInscription(p1["entryIndex"].toInt(), "aabb1234567890aabb1234567890aabb1234567890aabb1234567890aabb1234", "confirmed");
+        p.confirmInscription(p2["entryIndex"].toInt(), "ccdd1234567890ccdd1234567890ccdd1234567890ccdd1234567890ccdd1234", "ok");
+        p.confirmInscription(p3["entryIndex"].toInt(), "", "failed");
+
+        auto st = parseObj(p.getStatus());
+        QCOMPARE(st["inscribedCids"].toInt(), 2);  // confirmed + ok both count
+        QCOMPARE(st["seenCids"].toInt(), 3);
+    }
+
+    void testGetNodeInfoReturnsErrorOnBadUrl()
+    {
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+        // Point at a definitely-unreachable URL
+        p.setNodeUrl("http://127.0.0.1:19999");
+        auto r = parseObj(p.getNodeInfo());
+        QVERIFY(r.contains("error"));
+        QVERIFY(!r["error"].toString().isEmpty());
+    }
+
+    void testFindExplorerTxHashRejectsEmptyChannelId()
+    {
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+        auto r = parseObj(p.findExplorerTxHash("", 4711799, 4711900));
+        QCOMPARE(r["found"].toBool(), false);
+        QCOMPARE(r["txHash"].toString(), QString());
+    }
+
+    void testFindExplorerTxHashRejectsZeroSlotFrom()
+    {
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+        auto r = parseObj(p.findExplorerTxHash("8edab686b441eac68b194445a5052b65812ed25d68abe582824cadab99d5bf31", 0, 100));
+        QCOMPARE(r["found"].toBool(), false);
+    }
+
+    void testGetBlockForTxReturnsNotFoundForEmptyHash()
+    {
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+        auto r = parseObj(p.getBlockForTx("", 4711799));
+        QCOMPARE(r["found"].toBool(), false);
+        QCOMPARE(r["blockHash"].toString(), QString());
+    }
+
+    void testPinCidLogIncludesAllFields()
+    {
+        // Verify all expected fields are present in log entries
+        QTemporaryDir tmp; QVERIFY(tmp.isValid());
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        p.pinCid("QmFieldCid11111111111111111111111111111111111111", "my label", "keeper", 1234, 1000);
+        auto log = parseArr(p.getInscriptionLog());
+        QCOMPARE(log.size(), 1);
+        QJsonObject e = log[0].toObject();
+
+        QVERIFY(e.contains("cid"));
+        QVERIFY(e.contains("label"));
+        QVERIFY(e.contains("source"));
+        QVERIFY(e.contains("ts"));
+        QVERIFY(e.contains("status"));
+        QVERIFY(e.contains("inscriptionId"));
+        QVERIFY(e.contains("slotFrom"));
+        QVERIFY(e.contains("libAtSubmit"));
+
+        QCOMPARE(e["slotFrom"].toInt(), 1234);
+        QCOMPARE(e["libAtSubmit"].toInt(), 1000);
+        QCOMPARE(e["source"].toString(), QString("keeper"));
     }
 };
 
