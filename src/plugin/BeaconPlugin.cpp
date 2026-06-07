@@ -396,20 +396,22 @@ QString BeaconPlugin::findExplorerTxHash(const QString& channelId,
     if (!blocksDoc.isArray())
         return QJsonDocument(result).toJson(QJsonDocument::Compact);
 
+    // mantle_tx.hash == explorer hash (confirmed; zone_sequencer TxHash is different)
+    // We read it directly from the block scan — no need for a separate explorer round-trip.
     QString blockHeaderId;
-    int     txIndex = -1;
+    QString txHash;
 
     for (const QJsonValue& bv : blocksDoc.array()) {
         const QJsonObject block = bv.toObject();
         const QString     bid   = block[QStringLiteral("header")][QStringLiteral("id")].toString();
-        const QJsonArray  txs   = block[QStringLiteral("transactions")].toArray();
-        for (int ti = 0; ti < txs.size(); ++ti) {
-            const QJsonArray ops = txs[ti][QStringLiteral("mantle_tx")]
-                                       [QStringLiteral("ops")].toArray();
+        for (const QJsonValue& tv : block[QStringLiteral("transactions")].toArray()) {
+            const QJsonArray ops = tv[QStringLiteral("mantle_tx")]
+                                     [QStringLiteral("ops")].toArray();
             for (const QJsonValue& ov : ops) {
                 if (ov[QStringLiteral("payload")][QStringLiteral("channel_id")].toString() == channelId) {
                     blockHeaderId = bid;
-                    txIndex       = ti;
+                    txHash        = tv[QStringLiteral("mantle_tx")]
+                                      [QStringLiteral("hash")].toString();
                     goto found_block;
                 }
             }
@@ -418,36 +420,10 @@ QString BeaconPlugin::findExplorerTxHash(const QString& channelId,
     return QJsonDocument(result).toJson(QJsonDocument::Compact);  // not found
 
 found_block:
-    result[QStringLiteral("blockHash")] = blockHeaderId;
-
-    // ── Step 2: get current fork ──────────────────────────────────────────────
-    int fork = 0;
-    {
-        QNetworkReply* fr = getReply(explorerBaseUrl() + QStringLiteral("/web/explorer/api/v1/fork-choice"));
-        if (fr->error() == QNetworkReply::NoError)
-            fork = QJsonDocument::fromJson(fr->readAll())[QStringLiteral("fork")].toInt(0);
-        fr->deleteLater();
-    }
-
-    // ── Step 3: query explorer block → real TX hash ───────────────────────────
-    QNetworkReply* exReply = getReply(
-        QString("%1/web/explorer/api/v1/blocks/%2?fork=%3")
-            .arg(explorerBaseUrl(), blockHeaderId).arg(fork));
-
-    if (exReply->error() != QNetworkReply::NoError) {
-        exReply->deleteLater();
-        return QJsonDocument(result).toJson(QJsonDocument::Compact);
-    }
-    QJsonDocument exDoc = QJsonDocument::fromJson(exReply->readAll());
-    exReply->deleteLater();
-
-    const QJsonArray exTxs = exDoc[QStringLiteral("transactions")].toArray();
-    if (txIndex >= 0 && txIndex < exTxs.size()) {
-        const QString txHash = exTxs[txIndex][QStringLiteral("hash")].toString();
-        if (!txHash.isEmpty()) {
-            result[QStringLiteral("txHash")] = txHash;
-            result[QStringLiteral("found")]  = true;
-        }
+    if (!txHash.isEmpty()) {
+        result[QStringLiteral("txHash")]    = txHash;
+        result[QStringLiteral("blockHash")] = blockHeaderId;
+        result[QStringLiteral("found")]     = true;
     }
     return QJsonDocument(result).toJson(QJsonDocument::Compact);
 }

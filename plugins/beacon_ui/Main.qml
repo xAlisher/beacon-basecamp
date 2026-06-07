@@ -33,7 +33,6 @@ Item {
     property bool   pollBusy:          false
     property var    manifestedModules: ({})   // module name → true, loaded from manifest-log.json
     property int    inscribedCount:    0
-    property var    pendingResolutions: []
     property string channelLabel:      "My Beacon"   // kept for future use
     property string broadcastStatus:   ""             // kept for future use
 
