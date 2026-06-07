@@ -631,6 +631,33 @@ Item {
                     appendActivity("zone sequencer ready — " + root.channelId.substring(0,16) + "…", "success")
                     root.currentScreen     = "main"
                     root.refreshModules()
+
+                    // Re-populate pendingFinalizations for any in-flight inscriptions
+                    // (handles beacon restart while inscriptions were in submitted/finalizing state)
+                    var restored = []
+                    for (var ri = 0; ri < logModel.count; ri++) {
+                        var le = logModel.get(ri)
+                        if ((le.status === "submitted" || le.status === "finalizing" || le.status === "queued")
+                                && le.slotFrom > 0) {
+                            var useChId = root.channelId
+                            if (le.source && le.source.length > 0) {
+                                setupModuleChannel(le.source)
+                                var rmc = root.moduleChannels[le.source]
+                                if (rmc) useChId = rmc.channelId
+                            }
+                            restored.push({
+                                entryIndex:  ri,
+                                channelId:   useChId,
+                                slotFrom:    le.slotFrom,
+                                libAtSubmit: le.libAtSubmit || 0,
+                                cid:         le.cid
+                            })
+                        }
+                    }
+                    if (restored.length > 0) {
+                        root.pendingFinalizations = restored
+                        appendActivity("resumed " + restored.length + " in-flight inscription(s)", "info")
+                    }
                 } else {
                     root.keycardAuthStatus = "error"
                 }
