@@ -162,13 +162,27 @@ rm -rf ~/.cache/Logos/LogosBasecamp/qmlcache
 
 ## Usage
 
+### First-time setup — set your node URL
+
+Beacon inscribes via a Logos testnet node. **Nothing will work until you point Beacon at a reachable node.**
+
+1. Launch Logos Basecamp — the **Beacon** tab appears in the sidebar
+2. Open the **Config** panel → **Node URL**
+3. Enter your node's RPC endpoint:
+   - Local node: `http://localhost:8080`
+   - Remote node: `http://<your-node-ip>:8080`
+4. Press **Enter** to save — Beacon confirms connectivity immediately
+
+> The default `http://100.108.127.3:8080` is a private node on Tailscale. It is not reachable without VPN access. Change it before doing anything else.
+
 ### UI
 
 1. Launch Logos Basecamp — the **Beacon** tab appears in the sidebar
-2. Insert your Keycard — Beacon picks up the Ed25519 key automatically
-3. Enable **Watch Stash** in the config panel to auto-inscribe all Stash uploads
-4. Or paste any CID + label in the manual pin panel and click **Inscribe**
-5. The activity log shows: `pending → confirming → confirmed` with a live explorer link
+2. Set your node URL (see above)
+3. Insert your Keycard — Beacon picks up the Ed25519 key automatically
+4. Enable **Watch Stash** in the config panel to auto-inscribe all Stash uploads
+5. Or paste any CID + label in the manual pin panel and click **Inscribe**
+6. The activity log shows: `pending → confirming → confirmed` with a live explorer link
 
 ### Config panel
 
