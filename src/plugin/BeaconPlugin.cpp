@@ -400,18 +400,16 @@ QString BeaconPlugin::findExplorerTxHash(const QString& channelId,
     // Step 1: find the block containing our channelId inscription via node scan.
     // Step 2: query explorer block API to get the real explorer tx hash.
     QString blockHeaderId;
-    QString mantleTxHash;  // fallback: mantle_tx.hash from node if explorer is unavailable
 
     for (const QJsonValue& bv : blocksDoc.array()) {
         const QJsonObject block = bv.toObject();
         const QString     bid   = block[QStringLiteral("header")][QStringLiteral("id")].toString();
         for (const QJsonValue& tv : block[QStringLiteral("transactions")].toArray()) {
-            const QJsonObject mt  = tv[QStringLiteral("mantle_tx")].toObject();
-            const QJsonArray  ops = mt[QStringLiteral("ops")].toArray();
+            const QJsonArray ops = tv[QStringLiteral("mantle_tx")]
+                                     [QStringLiteral("ops")].toArray();
             for (const QJsonValue& ov : ops) {
                 if (ov[QStringLiteral("payload")][QStringLiteral("channel_id")].toString() == channelId) {
                     blockHeaderId = bid;
-                    mantleTxHash  = mt[QStringLiteral("hash")].toString();
                     goto found_block;
                 }
             }
@@ -447,10 +445,6 @@ found_block:
         }
     }
     explorerReply->deleteLater();
-
-    // Fall back to the node's mantle_tx.hash when the explorer hasn't indexed the block yet
-    if (txHash.isEmpty() && !mantleTxHash.isEmpty())
-        txHash = mantleTxHash;
 
     if (!txHash.isEmpty()) {
         result[QStringLiteral("txHash")]    = txHash;

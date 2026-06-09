@@ -593,8 +593,8 @@ Item {
                     }
                     root.inscribedCount++
                     appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  " + fResult.txHash.substring(0, 16) + "…", "success")
-                } else if (slotTo > item.slotFrom + 3000) {
-                    // Timed out — ~50 min of trying without success
+                } else if (slotTo > item.slotFrom + 14400) {
+                    // Timed out — ~4 hours of trying without success
                     logos.callModule("logos_beacon", "confirmInscription",
                                     [item.entryIndex, "", "failed"])
                     if (item.entryIndex >= 0 && item.entryIndex < logModel.count)
