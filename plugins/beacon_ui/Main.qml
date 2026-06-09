@@ -238,7 +238,7 @@ Item {
             root.currentLibSlot = libSlot
         }
 
-        var useKey, useChannelId
+        var useKey, useChannelId, useCheckpoint = ""
         if (source && source.length > 0) {
             setupModuleChannel(source)
             var mc = root.moduleChannels[source]
