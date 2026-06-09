@@ -49,7 +49,7 @@ All dependencies must be installed and loaded in Logos Basecamp.
 |--------|---------------|------|------|
 | **beacon** (this) | `logos_beacon` | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | C++ core plugin |
 | **beacon-ui** (this) | `beacon_ui` (plugin) | [beacon-basecamp](https://github.com/xAlisher/beacon-basecamp) | QML interface |
-| **zone sequencer** | `liblogos_zone_sequencer_module` | [xAlisher/logos-zone-sequencer-module](https://github.com/xAlisher/logos-zone-sequencer-module) — **not in AppImage**, install separately ([v0.1.2 LGX](https://github.com/xAlisher/logos-zone-sequencer-module/releases/tag/v0.1.2)) | publishes `cid_pin` payloads to LEZ chain |
+| **zone sequencer** | `liblogos_zone_sequencer_module` | [xAlisher/logos-zone-sequencer-module](https://github.com/xAlisher/logos-zone-sequencer-module) — **not in AppImage**, install separately ([v0.1.3 LGX](https://github.com/xAlisher/logos-zone-sequencer-module/releases/tag/v0.1.3)) | publishes `cid_pin` payloads to LEZ chain |
 | **stash** | `stash` | [stash-basecamp](https://github.com/xAlisher/stash-basecamp) | source of uploaded CIDs to watch |
 | **keycard** | `logos_keycard` | [keycard-basecamp](https://github.com/xAlisher/keycard-basecamp) | provides Ed25519 signing key (required for inscription) |
 
