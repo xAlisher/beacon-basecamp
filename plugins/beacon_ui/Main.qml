@@ -493,6 +493,27 @@ Item {
         var niRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
         var ni = callModuleParse(niRaw)
         if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
+
+        // Restore in-flight finalizations that survived a restart
+        var restoredPF = []
+        var rLogRaw = logos.callModule("logos_beacon", "getInscriptionLog", [])
+        var rLog = callModuleParse(rLogRaw)
+        if (Array.isArray(rLog)) {
+            for (var ri = 0; ri < rLog.length; ri++) {
+                var re = rLog[ri]
+                if (re.status === "finalizing" || re.status === "submitted") {
+                    restoredPF.push({
+                        entryIndex: ri,
+                        channelId:  root.channelId || "",
+                        slotFrom:   re.slotFrom || 0
+                    })
+                }
+            }
+        }
+        if (restoredPF.length > 0) {
+            root.pendingFinalizations = restoredPF
+            appendActivity("restored " + restoredPF.length + " pending finalization(s) after restart", "info")
+        }
     }
 
     // ── Timers ────────────────────────────────────────────────────────────────
