@@ -229,3 +229,4 @@ beacon-basecamp/
 | 10 | Tests | Unit tests | done |
 | 11 | UI | Real-time log update on inscription confirm | pending |
 | 12 | Core | Add `source` field to `cid_pin` payload | pending |
+| 13 | Resilience | Graceful explorer lag: `findExplorerTxHash` falls back to blockHeaderId when explorer 404s; finalizationTimer timeout `slotFrom+14400` may still expire before explorer catches up on slow testnet indexers — consider extending timeout or making it configurable | done (fallback merged 2026-06-10; timeout still hardcoded) |

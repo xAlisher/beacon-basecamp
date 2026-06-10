@@ -296,6 +296,8 @@ Item {
             // Primary beacon channel — use the persistent sequencer handle (fast path)
             pubRaw = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
         } else {
+            // Re-assert node URL — cord (or another plugin) may have overwritten the shared state.
+            logos.callModule("liblogos_zone_sequencer_module", "set_node_url", [root.nodeUrl])
             // Module sub-channel — use stateless publish_to so the correct channel is used.
             pubRaw = logos.callModule("liblogos_zone_sequencer_module",
                                       "publish_to", [useChannelId, useKey, useCheckpoint, payload])
@@ -502,9 +504,15 @@ Item {
             for (var ri = 0; ri < rLog.length; ri++) {
                 var re = rLog[ri]
                 if (re.status === "finalizing" || re.status === "submitted") {
+                    var rChId = root.channelId || ""
+                    if (re.source && re.source.length > 0) {
+                        setupModuleChannel(re.source)
+                        var rmc = root.moduleChannels[re.source]
+                        if (rmc) rChId = rmc.channelId
+                    }
                     restoredPF.push({
                         entryIndex: ri,
-                        channelId:  root.channelId || "",
+                        channelId:  rChId,
                         slotFrom:   re.slotFrom || 0
                     })
                 }

@@ -450,6 +450,13 @@ found_block:
         result[QStringLiteral("txHash")]    = txHash;
         result[QStringLiteral("blockHash")] = blockHeaderId;
         result[QStringLiteral("found")]     = true;
+    } else {
+        // Explorer hasn't indexed this block yet (testnet explorer lags 1-2 days behind the
+        // chain). The block IS on-chain (step 1 confirmed it) — use the block header ID as
+        // the txHash so the inscription confirms immediately rather than timing out.
+        result[QStringLiteral("txHash")]    = blockHeaderId;
+        result[QStringLiteral("blockHash")] = blockHeaderId;
+        result[QStringLiteral("found")]     = true;
     }
     return QJsonDocument(result).toJson(QJsonDocument::Compact);
 }

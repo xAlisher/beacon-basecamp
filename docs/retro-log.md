@@ -193,3 +193,9 @@ QML calling `pinCid(cid, label, source)` (3 args) against installed .so that onl
 fix: beacon aligned with logos-module-builder b3f1d658 + RC3 SDK
 
 nixpkgs.follows required `...` in outputs destructuring (was erroring "unexpected argument 'nixpkgs'"). CMakeLists.txt hardcoded Nix store paths (logos-cpp-sdk + liblogos-headers) go stale after module-builder update — updated to new hashes. logos_api_stub.cpp: added logos_object.h include; dropped onEvent stub (BeaconPlugin doesn't use it, avoids SDK signature drift). 25/25 unit tests pass on Qt 6.9.3. Verified live — modules load, inscription flow works.
+
+## fail 2026-06-10
+repeated double-instance: kill sequence not terminating all AppImage children before relaunch; need to fix kill approach per module-kill-and-relaunch skill
+
+## win 2026-06-10
+testnet explorer lag root cause found: ~54h behind chain. Fixed findExplorerTxHash to fall back to blockHeaderId when explorer returns 404. Cypherpunk Manifesto confirmed. Links will show proper tx hash once explorer catches up (~June 12).
