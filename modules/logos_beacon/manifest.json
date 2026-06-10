@@ -1,7 +1,7 @@
 {
   "author": "Beacon",
   "category": "storage",
-  "dependencies": [],
+  "dependencies": ["stash", "logos_keycard", "liblogos_zone_sequencer_module"],
   "description": "Beacon — on-chain CID inscription",
   "icon": "",
   "main": {
