@@ -77,11 +77,38 @@ Item {
         } catch(e) { return null }
     }
 
-    // ── Activity log helper ───────────────────────────────────────────────────
+    // ── Unified feed helpers ──────────────────────────────────────────────────
+    function feedEntryRow(cid, label, source, tsStr, inscriptionId, status, slotFrom, libAtSubmit) {
+        return { rowType: "entry", cid: cid, label: label, source: source, tsStr: tsStr,
+                 inscriptionId: inscriptionId, status: status,
+                 slotFrom: slotFrom, libAtSubmit: libAtSubmit, msg: "", level: "" }
+    }
+
+    // feed index of the entry row for this cid, -1 if absent
+    function feedRowFor(cid) {
+        for (var i = 0; i < logModel.count; i++) {
+            var r = logModel.get(i)
+            if (r.rowType === "entry" && r.cid === cid) return i
+        }
+        return -1
+    }
+
     function appendActivity(msg, level) {
-        var ts = "[" + Qt.formatDateTime(new Date(), "HH:mm:ss") + "]"
-        if (activityLogModel.count >= 200) activityLogModel.remove(0)
-        activityLogModel.append({ ts: ts, msg: msg, level: level || "info" })
+        // cap activity rows only — entry rows must survive (finalization updates
+        // find them by cid)
+        var activityCount = 0, oldest = -1
+        for (var i = 0; i < logModel.count; i++) {
+            if (logModel.get(i).rowType === "activity") {
+                activityCount++
+                if (oldest < 0) oldest = i
+            }
+        }
+        if (activityCount >= 200 && oldest >= 0) logModel.remove(oldest)
+        logModel.append({ rowType: "activity",
+                          tsStr: Qt.formatDateTime(new Date(), "HH:mm:ss"),
+                          msg: msg, level: level || "info",
+                          cid: "", label: "", source: "", inscriptionId: "",
+                          status: "", slotFrom: 0, libAtSubmit: 0 })
     }
 
     // ── Keycard auth (deferred via Qt.callLater to unblock UI render) ─────────
@@ -224,7 +251,9 @@ Item {
     }
 
     // ── Inscription flow ──────────────────────────────────────────────────────
-    function inscribeCid(cid, label, source) {
+    // rawPayload (optional): publish this exact string instead of a cid_pin JSON —
+    // the free-text inscribe path for preparing test/campaign channels (#25)
+    function inscribeCid(cid, label, source, rawPayload) {
         if (root.pollBusy) return
         root.pollBusy = true
 
@@ -271,19 +300,10 @@ Item {
 
         var entryIndex = pin.entryIndex
 
-        var now = new Date()
-        logModel.insert(entryIndex, {
-            cid:           cid,
-            label:         label,
-            source:        source || "",
-            tsStr:         Qt.formatDateTime(now, "HH:mm:ss"),
-            inscriptionId: "",
-            status:        "queued",
-            slotFrom:      nodeSlot,
-            libAtSubmit:   libSlot
-        })
+        logModel.append(feedEntryRow(cid, label, source || "",
+            Qt.formatDateTime(new Date(), "HH:mm:ss"), "", "queued", nodeSlot, libSlot))
 
-        var payload = JSON.stringify({
+        var payload = (rawPayload && rawPayload.length > 0) ? rawPayload : JSON.stringify({
             v:      1,
             type:   "cid_pin",
             cid:    cid,
@@ -312,10 +332,12 @@ Item {
             isError = true
         }
 
+        var feedRow
         if (isError) {
             logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "failed"])
-            if (entryIndex >= 0 && entryIndex < logModel.count)
-                logModel.setProperty(entryIndex, "status", "failed")
+            feedRow = feedRowFor(cid)
+            if (feedRow >= 0)
+                logModel.setProperty(feedRow, "status", "failed")
             appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
             root.pollBusy = false
             return false
@@ -323,8 +345,9 @@ Item {
 
         // Submitted — deferred confirmation via finalizationTimer (block scan → real explorer hash)
         logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "submitted"])
-        if (entryIndex >= 0 && entryIndex < logModel.count)
-            logModel.setProperty(entryIndex, "status", "submitted")
+        feedRow = feedRowFor(cid)
+        if (feedRow >= 0)
+            logModel.setProperty(feedRow, "status", "submitted")
 
         var updatedPF = root.pendingFinalizations.slice()
         updatedPF.push({
@@ -348,6 +371,15 @@ Item {
 
         root.pollBusy = false
         return true
+    }
+
+    // ── Free-text inscribe (#25) — publishes the typed text verbatim to the
+    // primary channel; pseudo-cid keys the feed row and stays unique so pinCid's
+    // duplicate guard never trips. Used to prepare campaign/test channels.
+    function inscribeText(text) {
+        var t = text.trim()
+        if (t.length === 0) return false
+        return inscribeCid("text:" + Date.now(), t, "", t)
     }
 
     // ── Broadcast channel announce (kept for future use; not exposed in UI) ───
@@ -422,24 +454,70 @@ Item {
         var entries = callModuleParse(raw)
         if (!Array.isArray(entries)) return
 
-        logModel.clear()
+        // in-place sync keyed by cid — never clear/rebuild: activity rows and the
+        // scroll position survive the 5s refresh
         var count = 0
+        var seen = {}
         for (var i = 0; i < entries.length; i++) {
             var e  = entries[i]
-            var ts = new Date(e.ts * 1000)
-            logModel.append({
-                cid:           e.cid    || "",
-                label:         e.label  || "",
-                source:        e.source || "",
-                tsStr:         Qt.formatDateTime(ts, "HH:mm:ss"),
-                inscriptionId: e.inscriptionId || "",
-                status:        e.status || "pending",
-                slotFrom:      e.slotFrom    || 0,
-                libAtSubmit:   e.libAtSubmit || 0
-            })
+            var cid = e.cid || ""
+            seen[cid] = true
+            var row = feedRowFor(cid)
+            if (row < 0) {
+                logModel.append(feedEntryRow(cid, e.label || "", e.source || "",
+                    Qt.formatDateTime(new Date(e.ts * 1000), "HH:mm:ss"),
+                    e.inscriptionId || "", e.status || "pending",
+                    e.slotFrom || 0, e.libAtSubmit || 0))
+            } else {
+                var cur = logModel.get(row)
+                if (cur.status !== (e.status || "pending"))
+                    logModel.setProperty(row, "status", e.status || "pending")
+                if (cur.inscriptionId !== (e.inscriptionId || ""))
+                    logModel.setProperty(row, "inscriptionId", e.inscriptionId || "")
+                if (cur.label !== (e.label || ""))
+                    logModel.setProperty(row, "label", e.label || "")
+            }
             if (e.status === "ok" || e.status === "confirmed") count++
         }
+        for (var j = logModel.count - 1; j >= 0; j--) {
+            var r = logModel.get(j)
+            if (r.rowType === "entry" && !seen[r.cid]) logModel.remove(j)
+        }
         root.inscribedCount = count
+    }
+
+    // Re-arm pendingFinalizations from the persisted log (C++ index = entryIndex
+    // for confirmInscription; cid keys the feed row). One function for both the
+    // startup and the post-auth path — they used to be two diverging copies, one
+    // of which dropped cid/libAtSubmit and broke the confirm message.
+    function restoreInFlight(label) {
+        var rLogRaw = logos.callModule("logos_beacon", "getInscriptionLog", [])
+        var rLog = callModuleParse(rLogRaw)
+        if (!Array.isArray(rLog)) return
+        var restored = []
+        for (var ri = 0; ri < rLog.length; ri++) {
+            var re = rLog[ri]
+            if ((re.status === "submitted" || re.status === "finalizing" || re.status === "queued")
+                    && (re.slotFrom || 0) > 0) {
+                var chId = root.channelId || ""
+                if (re.source && re.source.length > 0) {
+                    setupModuleChannel(re.source)
+                    var rmc = root.moduleChannels[re.source]
+                    if (rmc) chId = rmc.channelId
+                }
+                restored.push({
+                    entryIndex:  ri,
+                    channelId:   chId,
+                    slotFrom:    re.slotFrom || 0,
+                    libAtSubmit: re.libAtSubmit || 0,
+                    cid:         re.cid || ""
+                })
+            }
+        }
+        if (restored.length > 0) {
+            root.pendingFinalizations = restored
+            appendActivity(label.replace("%1", restored.length), "info")
+        }
     }
 
     // ── Modules refresh ───────────────────────────────────────────────────────
@@ -499,31 +577,7 @@ Item {
         if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
 
         // Restore in-flight finalizations that survived a restart
-        var restoredPF = []
-        var rLogRaw = logos.callModule("logos_beacon", "getInscriptionLog", [])
-        var rLog = callModuleParse(rLogRaw)
-        if (Array.isArray(rLog)) {
-            for (var ri = 0; ri < rLog.length; ri++) {
-                var re = rLog[ri]
-                if (re.status === "finalizing" || re.status === "submitted") {
-                    var rChId = root.channelId || ""
-                    if (re.source && re.source.length > 0) {
-                        setupModuleChannel(re.source)
-                        var rmc = root.moduleChannels[re.source]
-                        if (rmc) rChId = rmc.channelId
-                    }
-                    restoredPF.push({
-                        entryIndex: ri,
-                        channelId:  rChId,
-                        slotFrom:   re.slotFrom || 0
-                    })
-                }
-            }
-        }
-        if (restoredPF.length > 0) {
-            root.pendingFinalizations = restoredPF
-            appendActivity("restored " + restoredPF.length + " pending finalization(s) after restart", "info")
-        }
+        restoreInFlight("restored %1 pending finalization(s) after restart")
     }
 
     // ── Timers ────────────────────────────────────────────────────────────────
@@ -571,14 +625,16 @@ Item {
             for (var i = 0; i < pf.length; i++) {
                 var item = pf[i]
 
+                // feed row keyed by cid — entryIndex stays the C++ log index only
+                var fRow = root.feedRowFor(item.cid || "")
+
                 // Need lib_slot to have advanced past slotFrom for the tx to be finalized
                 if (libNow <= item.slotFrom) {
                     // Update to "finalizing" once node slot has passed slotFrom
-                    if (libNow > 0 && item.slotFrom > 0
-                            && item.entryIndex >= 0 && item.entryIndex < logModel.count) {
-                        var curSt = logModel.get(item.entryIndex).status
+                    if (libNow > 0 && item.slotFrom > 0 && fRow >= 0) {
+                        var curSt = logModel.get(fRow).status
                         if (curSt === "submitted" || curSt === "queued") {
-                            logModel.setProperty(item.entryIndex, "status", "finalizing")
+                            logModel.setProperty(fRow, "status", "finalizing")
                             logos.callModule("logos_beacon", "confirmInscription",
                                             [item.entryIndex, "", "finalizing"])
                         }
@@ -597,9 +653,9 @@ Item {
                     // Confirmed — store real explorer hash
                     logos.callModule("logos_beacon", "confirmInscription",
                                     [item.entryIndex, fResult.txHash, "confirmed"])
-                    if (item.entryIndex >= 0 && item.entryIndex < logModel.count) {
-                        logModel.setProperty(item.entryIndex, "inscriptionId", fResult.txHash)
-                        logModel.setProperty(item.entryIndex, "status", "confirmed")
+                    if (fRow >= 0) {
+                        logModel.setProperty(fRow, "inscriptionId", fResult.txHash)
+                        logModel.setProperty(fRow, "status", "confirmed")
                     }
                     root.inscribedCount++
                     appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  " + fResult.txHash.substring(0, 16) + "…", "success")
@@ -607,15 +663,15 @@ Item {
                     // Timed out — ~4 hours of trying without success
                     logos.callModule("logos_beacon", "confirmInscription",
                                     [item.entryIndex, "", "failed"])
-                    if (item.entryIndex >= 0 && item.entryIndex < logModel.count)
-                        logModel.setProperty(item.entryIndex, "status", "failed")
+                    if (fRow >= 0)
+                        logModel.setProperty(fRow, "status", "failed")
                     appendActivity("failed (timeout): " + item.cid.substring(0, 16) + "…", "error")
                 } else {
                     // Still scanning — mark finalizing if not already
-                    if (item.entryIndex >= 0 && item.entryIndex < logModel.count) {
-                        var st2 = logModel.get(item.entryIndex).status
+                    if (fRow >= 0) {
+                        var st2 = logModel.get(fRow).status
                         if (st2 !== "finalizing") {
-                            logModel.setProperty(item.entryIndex, "status", "finalizing")
+                            logModel.setProperty(fRow, "status", "finalizing")
                             logos.callModule("logos_beacon", "confirmInscription",
                                             [item.entryIndex, "", "finalizing"])
                         }
@@ -664,30 +720,7 @@ Item {
 
                     // Re-populate pendingFinalizations for any in-flight inscriptions
                     // (handles beacon restart while inscriptions were in submitted/finalizing state)
-                    var restored = []
-                    for (var ri = 0; ri < logModel.count; ri++) {
-                        var le = logModel.get(ri)
-                        if ((le.status === "submitted" || le.status === "finalizing" || le.status === "queued")
-                                && le.slotFrom > 0) {
-                            var useChId = root.channelId
-                            if (le.source && le.source.length > 0) {
-                                setupModuleChannel(le.source)
-                                var rmc = root.moduleChannels[le.source]
-                                if (rmc) useChId = rmc.channelId
-                            }
-                            restored.push({
-                                entryIndex:  ri,
-                                channelId:   useChId,
-                                slotFrom:    le.slotFrom,
-                                libAtSubmit: le.libAtSubmit || 0,
-                                cid:         le.cid
-                            })
-                        }
-                    }
-                    if (restored.length > 0) {
-                        root.pendingFinalizations = restored
-                        appendActivity("resumed " + restored.length + " in-flight inscription(s)", "info")
-                    }
+                    restoreInFlight("resumed %1 in-flight inscription(s)")
                 } else {
                     root.keycardAuthStatus = "error"
                 }
@@ -734,9 +767,12 @@ Item {
     }
 
     // ── Models ────────────────────────────────────────────────────────────────
+    // logModel is the unified feed: inscription entries AND activity lines, one
+    // chronological window (rowType: "entry" | "activity"). Entry rows are keyed
+    // by cid (pinCid guarantees one row per cid); every row carries every role —
+    // ListModel locks roles on first append.
     ListModel { id: logModel }
     ListModel { id: modulesModel }
-    ListModel { id: activityLogModel }
 
     // ── Landing screen ────────────────────────────────────────────────────────
     Rectangle {
@@ -1252,7 +1288,7 @@ Item {
                         spacing: 4
 
                         Text {
-                            text: "Log"
+                            text: "Log & Activity"
                             font.pixelSize: 13
                             font.bold: true
                             color: root.textPrimary
@@ -1282,6 +1318,10 @@ Item {
                                     var lines = []
                                     for (var i = 0; i < logModel.count; i++) {
                                         var r = logModel.get(i)
+                                        if (r.rowType === "activity") {
+                                            lines.push("[" + r.tsStr + "] " + r.msg)
+                                            continue
+                                        }
                                         var src = r.source || "primary"
                                         var fname = r.label
                                         if (r.label.indexOf("Logos Storage: ") === 0) {
@@ -1316,6 +1356,69 @@ Item {
                         }
                     }
 
+                    // ── Free-text inscribe (#25) ──────────────────────────────
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: Math.min(72, Math.max(32, inscribeInput.implicitHeight + 12))
+                            color: root.bgSecondary
+                            radius: 4
+                            border.color: inscribeInput.activeFocus ? root.accentOrange : root.borderColor
+                            border.width: 1
+                            clip: true
+
+                            ScrollView {
+                                anchors.fill: parent
+                                anchors.margins: 6
+
+                                TextArea {
+                                    id: inscribeInput
+                                    color: root.textPrimary
+                                    font.pixelSize: 11
+                                    font.family: "Courier New, monospace"
+                                    wrapMode: TextArea.Wrap
+                                    placeholderText: "Inscribe anything — e.g. {\"v\":1,\"type\":\"ia_item\",\"id\":\"…\",\"name\":\"…\",\"size\":123}"
+                                    placeholderTextColor: root.textMuted
+                                    background: null
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 72; height: 32; radius: 4
+                            Layout.alignment: Qt.AlignTop
+                            property bool ready: root.zoneSeqReady
+                                                 && inscribeInput.text.trim().length > 0
+                                                 && !root.pollBusy
+                            color: !ready                        ? root.bgSecondary
+                                 : inscribeArea.pressed          ? root.accentPressed
+                                 : inscribeArea.containsMouse    ? root.accentHover
+                                 : root.accentOrange
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Inscribe"
+                                color: parent.ready ? "#FFFFFF" : root.textMuted
+                                font.pixelSize: 12; font.bold: true
+                            }
+
+                            MouseArea {
+                                id: inscribeArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: parent.ready ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                enabled: parent.ready
+                                onClicked: {
+                                    if (root.inscribeText(inscribeInput.text))
+                                        inscribeInput.text = ""
+                                }
+                            }
+                        }
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -1328,7 +1431,7 @@ Item {
                         Text {
                             anchors.centerIn: parent
                             visible: logModel.count === 0
-                            text: "No inscriptions yet"
+                            text: "Nothing yet — inscriptions and activity land here"
                             color: root.textMuted
                             font.pixelSize: 11
                             font.family: "Courier New, monospace"
@@ -1345,6 +1448,7 @@ Item {
                             delegate: Item {
                                 id: logEntry
                                 required property int    index
+                                required property string rowType
                                 required property string cid
                                 required property string label
                                 required property string source
@@ -1353,9 +1457,28 @@ Item {
                                 required property string status
                                 required property int    slotFrom
                                 required property int    libAtSubmit
+                                required property string msg
+                                required property string level
 
                                 width: logListView.width
-                                implicitHeight: entryCol.implicitHeight + 10
+                                implicitHeight: rowType === "activity"
+                                                ? actLine.implicitHeight + 2
+                                                : entryCol.implicitHeight + 10
+
+                                // Activity row — one selectable monospace line
+                                TextEdit {
+                                    id: actLine
+                                    visible: logEntry.rowType === "activity"
+                                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                                    text: "[" + logEntry.tsStr + "] " + logEntry.msg
+                                    color: logEntry.level === "success" ? root.successGreen
+                                         : logEntry.level === "error"   ? root.errorRed
+                                         : logEntry.level === "muted"   ? root.textMuted
+                                         : root.textSecondary
+                                    font.pixelSize: 11; font.family: "Courier New, monospace"
+                                    wrapMode: Text.WrapAnywhere; readOnly: true; selectByMouse: true
+                                    selectedTextColor: root.bgPrimary; selectionColor: root.textSecondary
+                                }
 
                                 // Progress: lib advancing from libAtSubmit toward slotFrom
                                 property real progressVal: {
@@ -1393,6 +1516,7 @@ Item {
 
                                 ColumnLayout {
                                     id: entryCol
+                                    visible: logEntry.rowType === "entry"
                                     anchors { left: parent.left; right: parent.right
                                               top: parent.top; topMargin: 4 }
                                     spacing: 3
@@ -1427,6 +1551,8 @@ Item {
                                         spacing: 6
 
                                         Text {
+                                            // pseudo-cids ("text:<epoch>") key free-text rows — noise, not content
+                                            visible: cid.indexOf("text:") !== 0
                                             text: cid.length > 0 ? cid.substring(0, 20) + "…" : "…"
                                             font.pixelSize: 10
                                             font.family: "Courier New, monospace"
@@ -1502,98 +1628,6 @@ Item {
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-            }
-
-            // ── Activity log (full width, below channels+inscription) ────────────
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-
-                RowLayout {
-                    Layout.fillWidth: true
-
-                    Text {
-                        text: "Activity"
-                        font.pixelSize: 11; font.bold: true
-                        color: root.textSecondary
-                        Layout.fillWidth: true
-                    }
-
-                    Item {
-                        width: 20; height: 20
-                        Image {
-                            anchors.centerIn: parent; width: 16; height: 16
-                            source: "icons/Copy.svg"; fillMode: Image.PreserveAspectFit
-                            opacity: actCopyArea.pressed ? 0.6 : actCopyArea.containsMouse ? 1.0 : 0.4
-                            Behavior on opacity { NumberAnimation { duration: 120 } }
-                        }
-                        MouseArea {
-                            id: actCopyArea; anchors.fill: parent
-                            hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                var lines = []
-                                for (var i = 0; i < activityLogModel.count; i++) {
-                                    var e = activityLogModel.get(i)
-                                    lines.push(e.ts + " " + e.msg)
-                                }
-                                root.copyToClipboard(lines.join("\n"))
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: "Clear"
-                        font.pixelSize: 11
-                        color: clearActArea.containsMouse ? root.textSecondary : root.textMuted
-                        Behavior on color { ColorAnimation { duration: 120 } }
-                        MouseArea {
-                            id: clearActArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: activityLogModel.clear()
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 110
-                    color: "#0D0D0D"
-                    radius: 4
-                    border.color: root.borderColor; border.width: 1
-                    clip: true
-
-                    Text {
-                        anchors.centerIn: parent
-                        visible: activityLogModel.count === 0
-                        text: "No activity yet"
-                        color: root.textMuted; font.pixelSize: 11
-                        font.family: "Courier New, monospace"
-                    }
-
-                    ListView {
-                        id: actListView
-                        anchors { fill: parent; margins: 8 }
-                        model: activityLogModel; clip: true; spacing: 1
-                        onCountChanged: Qt.callLater(() => actListView.positionViewAtEnd())
-
-                        delegate: TextEdit {
-                            required property string ts
-                            required property string msg
-                            required property string level
-                            width: actListView.width
-                            text: ts + " " + msg
-                            color: level === "success" ? root.successGreen
-                                 : level === "error"   ? root.errorRed
-                                 : level === "muted"   ? root.textMuted
-                                 : root.textSecondary
-                            font.pixelSize: 11; font.family: "Courier New, monospace"
-                            wrapMode: Text.WrapAnywhere; readOnly: true; selectByMouse: true
-                            selectedTextColor: root.bgPrimary; selectionColor: root.textSecondary
                         }
                     }
                 }
