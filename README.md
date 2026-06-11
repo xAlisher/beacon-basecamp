@@ -206,7 +206,7 @@ The `source` field indicates which Basecamp module originated the CID (e.g. `"lo
 Once an inscription is confirmed, the log shows a direct link:
 
 ```
-https://testnet.blockchain.logos.co/web/explorer/transactions/<txHash>
+https://logosblocks.noders.services/txs/<txHash>
 ```
 
 The tx hash is retrieved from the explorer block API (not from `zone_sequencer_publish` return value) — see Architecture notes below.
@@ -264,17 +264,23 @@ indexes. `findExplorerTxHash(channelId)` uses a 2-step approach:
 ```
 GET /cryptarchia/blocks?from_slot={libAtSubmit}&to_slot={libAtSubmit+N}
 → find block containing channelId in operations[].content.channel_id
-→ extract blockHeaderId
+→ extract blockHeaderId + the tx's index within the block
 ```
 
-**Step 2** — get the real tx hash from the explorer:
+**Step 2** — get the explorer's tx hash from the explorer block API:
 ```
-GET {explorer}/web/explorer/api/v1/fork-choice         → fork ID
-GET {explorer}/web/explorer/api/v1/blocks/{blockHeaderId}?fork={forkId}
-→ find tx matching channelId → return transactions[].hash
+GET {explorer}/api/blocks/{blockHeaderId}
+→ find tx where index_in_block matches the index from step 1
+→ return its tx_hash
 ```
 
-This is robust to zone sequencer library version differences and reorgs below LIB.
+The join is by tx position within the block because every system computes a different
+hash for the same tx: the node's `mantle_tx.hash`, `zone_sequencer_publish`'s TxHash,
+and the explorer's `tx_hash` are three distinct values.
+
+The default explorer is `https://logosblocks.noders.services` (near-live indexing,
+no fork-choice round-trip needed; overridable via the `beacon/explorerUrl` QSettings
+key). This is robust to zone sequencer library version differences and reorgs below LIB.
 
 ### pollBusy guard
 

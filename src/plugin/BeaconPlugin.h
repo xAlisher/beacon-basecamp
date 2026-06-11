@@ -110,7 +110,8 @@ public:
                                      int slotTo);
 
     // Scans node blocks [slotFrom, lib_slot] for a ChannelInscribe tx matching channelId,
-    // then queries explorer /blocks/{blockId}?fork=N to get the real explorer TX hash.
+    // then queries explorer /api/blocks/{blockId} and joins on the tx's index_in_block
+    // to get the explorer's TX hash (explorer hash != node mantle_tx.hash).
     // slotFrom: lower bound for block scan — pass the slot recorded at inscription time.
     // Returns {"txHash":"<hex>","blockHash":"<hex>","found":true} or {"found":false,...}
     Q_INVOKABLE QString findExplorerTxHash(const QString& channelId,

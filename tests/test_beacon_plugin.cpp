@@ -64,6 +64,24 @@ private slots:
         QCOMPARE(cfg["signingKeyHex"].toString(), key);
     }
 
+    void testExplorerUrlInConfig()
+    {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+
+        BeaconPlugin p;
+        p.setProperty("instancePersistencePath", tmp.path());
+        p.initLogos(nullptr);
+
+        // QML builds explorer links from this; with no QSettings override it
+        // must be the noders explorer default, with no trailing slash.
+        auto cfg = parseObj(p.getBeaconConfig());
+        const QString url = cfg["explorerUrl"].toString();
+        QVERIFY(!url.isEmpty());
+        QVERIFY(!url.endsWith('/'));
+        QCOMPARE(url, QStringLiteral("https://logosblocks.noders.services"));
+    }
+
     void testSetSigningKeyInvalid()
     {
         QTemporaryDir tmp;

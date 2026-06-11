@@ -23,6 +23,7 @@ Item {
     // ── State ─────────────────────────────────────────────────────────────────
     property string channelId:         ""
     property string nodeUrl:           "http://127.0.0.1:8080"
+    property string explorerUrl:       "https://logosblocks.noders.services"
     property string signingKeyHex:     ""
     property string persistencePath:   ""
     property bool   watchStash:        true   // always on; no UI toggle
@@ -469,6 +470,7 @@ Item {
         if (!cfg) return
 
         root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
+        root.explorerUrl     = cfg.explorerUrl     || root.explorerUrl
 
         var wsRaw = callModuleParse(logos.callModule("logos_beacon", "getWatchedSources", []))
         if (wsRaw && Array.isArray(wsRaw.sources) && wsRaw.sources.length > 0)
@@ -1380,7 +1382,7 @@ Item {
 
                                 property string explorerUrl:
                                     inscriptionId.length > 0
-                                    ? "https://testnet.blockchain.logos.co/web/explorer/transactions/" + inscriptionId
+                                    ? root.explorerUrl + "/txs/" + inscriptionId
                                     : ""
 
                                 property bool inFlight: status === "queued"
