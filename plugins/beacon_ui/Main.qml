@@ -312,6 +312,7 @@ Item {
             ts:     Math.floor(Date.now() / 1000)
         })
 
+        var pubStarted = Date.now()
         var pubRaw
         if (useChannelId === root.channelId) {
             // Primary beacon channel — use the persistent sequencer handle (fast path)
@@ -334,6 +335,24 @@ Item {
 
         var feedRow
         if (isError) {
+            // The IPC bridge gives up at ~20s but zone_sequencer_publish keeps
+            // running module-side (first publish pays SDK connect/backfill). An
+            // error AFTER the timeout window means "result lost", not "failed" —
+            // hand it to the finalization scan, which confirms from the chain
+            // and needs no inscription_id. Fast errors are real failures.
+            if (Date.now() - pubStarted >= 18000) {
+                logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "submitted"])
+                feedRow = feedRowFor(cid)
+                if (feedRow >= 0)
+                    logModel.setProperty(feedRow, "status", "submitted")
+                var pfSlow = root.pendingFinalizations.slice()
+                pfSlow.push({ entryIndex: entryIndex, channelId: useChannelId,
+                              slotFrom: nodeSlot, libAtSubmit: libSlot, cid: cid })
+                root.pendingFinalizations = pfSlow
+                appendActivity("[" + (source || "primary") + "] publish reply timed out — watching the chain for confirmation", "info")
+                root.pollBusy = false
+                return true
+            }
             logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "failed"])
             feedRow = feedRowFor(cid)
             if (feedRow >= 0)
@@ -1390,9 +1409,11 @@ Item {
                         Rectangle {
                             width: 72; height: 32; radius: 4
                             Layout.alignment: Qt.AlignTop
+                            // pollBusy deliberately NOT in this binding — the 5/6/10s
+                            // poll timers flip it constantly and the button would
+                            // flicker; inscribeCid() rejects busy clicks itself
                             property bool ready: root.zoneSeqReady
                                                  && inscribeInput.text.trim().length > 0
-                                                 && !root.pollBusy
                             color: !ready                        ? root.bgSecondary
                                  : inscribeArea.pressed          ? root.accentPressed
                                  : inscribeArea.containsMouse    ? root.accentHover
