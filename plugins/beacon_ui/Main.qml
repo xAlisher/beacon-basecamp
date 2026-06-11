@@ -42,6 +42,26 @@ Item {
     property var  pendingFinalizations: []
     property bool finalizationBusy:    false
 
+    // Free-text inscribe runs deferred: the click clears the input, flips the
+    // button to keycard-style dots and logs the request, THEN a short timer fires
+    // the blocking publish — without the deferral nothing repaints until the IPC
+    // call returns and the button feels dead.
+    property bool   inscribeBusy:         false
+    property string _pendingInscribeText: ""
+    Timer {
+        id: inscribeKick
+        interval: 80
+        repeat: false
+        onTriggered: {
+            var t = root._pendingInscribeText
+            root._pendingInscribeText = ""
+            var ok = root.inscribeText(t)
+            root.inscribeBusy = false
+            if (!ok && typeof inscribeInput !== "undefined" && inscribeInput.text.length === 0)
+                inscribeInput.text = t   // busy/failed before publish — give the text back
+        }
+    }
+
     // ── Screen state ──────────────────────────────────────────────────────────
     property string currentScreen: "landing"   // "landing" | "main"
 
@@ -1414,16 +1434,43 @@ Item {
                             // flicker; inscribeCid() rejects busy clicks itself
                             property bool ready: root.zoneSeqReady
                                                  && inscribeInput.text.trim().length > 0
-                            color: !ready                        ? root.bgSecondary
+                                                 && !root.inscribeBusy
+                            color: root.inscribeBusy             ? root.accentOrange
+                                 : !ready                        ? root.bgSecondary
                                  : inscribeArea.pressed          ? root.accentPressed
                                  : inscribeArea.containsMouse    ? root.accentHover
                                  : root.accentOrange
 
                             Text {
                                 anchors.centerIn: parent
+                                visible: !root.inscribeBusy
                                 text: "Inscribe"
                                 color: parent.ready ? "#FFFFFF" : root.textMuted
                                 font.pixelSize: 12; font.bold: true
+                            }
+
+                            // keycard-style request-in-flight dots
+                            Row {
+                                anchors.centerIn: parent
+                                visible: root.inscribeBusy
+                                spacing: 6
+
+                                Repeater {
+                                    model: 3
+                                    Rectangle {
+                                        width: 6; height: 6; radius: 3
+                                        color: "#FFFFFF"
+
+                                        SequentialAnimation on opacity {
+                                            running: root.inscribeBusy
+                                            loops: Animation.Infinite
+                                            PauseAnimation { duration: index * 200 }
+                                            NumberAnimation { from: 0.2; to: 1; duration: 300 }
+                                            NumberAnimation { from: 1; to: 0.2; duration: 300 }
+                                            PauseAnimation { duration: (2 - index) * 200 }
+                                        }
+                                    }
+                                }
                             }
 
                             MouseArea {
@@ -1433,8 +1480,14 @@ Item {
                                 cursorShape: parent.ready ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 enabled: parent.ready
                                 onClicked: {
-                                    if (root.inscribeText(inscribeInput.text))
-                                        inscribeInput.text = ""
+                                    var t = inscribeInput.text.trim()
+                                    if (t.length === 0) return
+                                    inscribeInput.text = ""        // request registered — input is free
+                                    root.inscribeBusy = true
+                                    root.appendActivity("inscribe requested — publishing "
+                                        + t.substring(0, 40) + (t.length > 40 ? "…" : ""), "info")
+                                    root._pendingInscribeText = t
+                                    inscribeKick.start()
                                 }
                             }
                         }
