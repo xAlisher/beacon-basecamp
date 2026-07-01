@@ -1,0 +1,27 @@
+// QtRO contract for beacon_ui's backend. QML binds via logos.module("beacon_ui")
+// and calls these SLOTs with logos.watch(...). The backend forwards to the
+// universal zone_sequencer via modules() — the v0.2 replacement for the legacy
+// logos.callModule("liblogos_zone_sequencer_module", ...) that cannot reach
+// Qt-free universal modules (beacon#30).
+class BeaconUi
+{
+    PROP(QString status="Ready" READONLY)
+    PROP(bool zoneSeqReady=false READONLY)
+
+    // Configure the primary channel end-to-end on zone_sequencer (set key+node,
+    // derive + set channel). Returns the 64-hex channel id, or "error: ...".
+    // Encapsulates the stateful sequence so QML makes one call, not five.
+    SLOT(QString configure(QString signingKeyHex, QString nodeUrl))
+
+    // Stateless channel derivation (for per-module sub-channels).
+    SLOT(QString deriveChannelId(QString signingKeyHex))
+
+    // Publish to the already-configured primary channel. Returns tx hash / "error:".
+    SLOT(QString publish(QString payload))
+
+    // Stateless publish to an arbitrary channel.
+    SLOT(QString publishTo(QString channelId, QString signingKeyHex, QString checkpointPath, QString payload))
+
+    // Health probe.
+    SLOT(QString ping())
+}
