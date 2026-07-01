@@ -223,8 +223,13 @@ QString BeaconPlugin::getNodeInfo()
     reply->deleteLater();
     if (!doc.isObject()) return errorJson(QStringLiteral("unexpected node response"));
     QJsonObject src = doc.object(), o;
-    o[QStringLiteral("slot")]     = src[QStringLiteral("slot")];
-    o[QStringLiteral("lib_slot")] = src[QStringLiteral("lib_slot")];
+    // v0.2 nests chain fields under "cryptarchia_info" (raw node); flat on older/explorer
+    // gateways. Accept both. "mode" stays top-level (sibling of cryptarchia_info).
+    const QJsonObject ci = src.contains(QStringLiteral("cryptarchia_info"))
+                               ? src.value(QStringLiteral("cryptarchia_info")).toObject()
+                               : src;
+    o[QStringLiteral("slot")]     = ci[QStringLiteral("slot")];
+    o[QStringLiteral("lib_slot")] = ci[QStringLiteral("lib_slot")];
     o[QStringLiteral("mode")]     = src[QStringLiteral("mode")];
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
@@ -477,7 +482,12 @@ QString BeaconPlugin::getBlockForTx(const QString& txHash, int slotFrom)
     QNetworkReply* infoReply = getReply(nodeUrl() + QStringLiteral("/cryptarchia/info"));
     if (infoReply->error() != QNetworkReply::NoError) { infoReply->deleteLater(); return QJsonDocument(result).toJson(QJsonDocument::Compact); }
     QJsonDocument infoDoc = QJsonDocument::fromJson(infoReply->readAll()); infoReply->deleteLater();
-    int libSlot = infoDoc[QStringLiteral("lib_slot")].toInt(0);
+    // v0.2: chain fields nest under "cryptarchia_info" on the raw node (accept both).
+    const QJsonObject infoObj = infoDoc.object();
+    const QJsonObject ciScan = infoObj.contains(QStringLiteral("cryptarchia_info"))
+                                   ? infoObj.value(QStringLiteral("cryptarchia_info")).toObject()
+                                   : infoObj;
+    int libSlot = ciScan[QStringLiteral("lib_slot")].toInt(0);
     if (libSlot <= 0) return QJsonDocument(result).toJson(QJsonDocument::Compact);
 
     int scanFrom = (slotFrom > 0) ? slotFrom : qMax(0, libSlot - 5000);
