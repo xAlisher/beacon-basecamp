@@ -97,6 +97,20 @@ Item {
         } catch(e) { return null }
     }
 
+    // Extract a channel id from liblogos_zone_sequencer_module.get_channel_id.
+    // Handles the modernized module's LogosResult { success, value, error }
+    // (v0.2 LogosModuleContext) as well as the legacy raw-string / { channelId }
+    // shapes, so beacon works against either module build. Returns "" on failure.
+    function seqChannelId(raw) {
+        var ch = callModuleParse(raw)
+        if (ch && typeof ch === 'object' && ch.hasOwnProperty('success'))
+            return (ch.success && ch.value) ? String(ch.value) : ""
+        if (typeof ch === 'string')
+            return (ch.length > 0 && !ch.toLowerCase().startsWith("error")) ? ch : ""
+        if (ch && ch.channelId) return String(ch.channelId)
+        return ""
+    }
+
     // ── Unified feed helpers ──────────────────────────────────────────────────
     function feedEntryRow(cid, label, source, tsStr, inscriptionId, status, slotFrom, libAtSubmit) {
         return { rowType: "entry", cid: cid, label: label, source: source, tsStr: tsStr,
@@ -173,14 +187,7 @@ Item {
 
         var chRaw = logos.callModule("liblogos_zone_sequencer_module",
                                      "get_channel_id", [])
-        var ch = callModuleParse(chRaw)
-        var derivedId = ""
-        if (typeof ch === 'string' && ch.length > 0 &&
-                !ch.toLowerCase().startsWith("error")) {
-            derivedId = ch
-        } else if (ch && ch.channelId) {
-            derivedId = ch.channelId
-        }
+        var derivedId = seqChannelId(chRaw)
 
         if (derivedId.length > 0) {
             logos.callModule("liblogos_zone_sequencer_module",
@@ -203,9 +210,8 @@ Item {
                          [""])  // empty = no stale-checkpoint backfill
         logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [""])
         var chRaw2 = logos.callModule("liblogos_zone_sequencer_module", "get_channel_id", [])
-        var ch2 = callModuleParse(chRaw2)
-        var derivedId = typeof ch2 === 'string' ? ch2 : (ch2 && ch2.channelId ? ch2.channelId : "")
-        if (!derivedId || derivedId.length === 0 || derivedId.toLowerCase().startsWith("error")) {
+        var derivedId = seqChannelId(chRaw2)
+        if (!derivedId || derivedId.length === 0) {
             appendActivity("manifest error for " + name + " (re-derive failed)", "error")
             return
         }
@@ -252,8 +258,7 @@ Item {
         logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [sk])
         logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [""])
         var chRaw = logos.callModule("liblogos_zone_sequencer_module", "get_channel_id", [])
-        var ch = callModuleParse(chRaw)
-        var channelId = typeof ch === "string" ? ch : (ch && ch.channelId ? ch.channelId : "")
+        var channelId = seqChannelId(chRaw)
 
         // Restore primary channel before any early return
         logos.callModule("liblogos_zone_sequencer_module",
