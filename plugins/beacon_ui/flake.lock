@@ -39340,16 +39340,16 @@
         "zone_sequencer": "zone_sequencer"
       },
       "locked": {
-        "lastModified": 1782910750,
-        "narHash": "sha256-YsOWyqb0i4DgEyvKpNoY/o9S0Ekq5OA7RNvj/aFNtTw=",
-        "ref": "feat/v0.2-modernized-sequencer-logosresult",
-        "rev": "5ff679ffecd4ccd67b6c59b8a0de9b7e061a7f7a",
-        "revCount": 53,
+        "lastModified": 1782941501,
+        "narHash": "sha256-U4pMYLUeZVYodFpopqUmG+qXpa8rfcKX3wQ8VVPg5Ow=",
+        "ref": "main",
+        "rev": "b0d87bdb702f6fda40a283147d9e103c2862805e",
+        "revCount": 51,
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/beacon-basecamp"
       },
       "original": {
-        "ref": "feat/v0.2-modernized-sequencer-logosresult",
+        "ref": "main",
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/beacon-basecamp"
       }
@@ -63401,14 +63401,14 @@
       "locked": {
         "lastModified": 1782908706,
         "narHash": "sha256-1AwVqbm+KHvmbPdJn/0lqTbsLLdxb+ScnGaYMKtIbgo=",
-        "ref": "feat/modernize-modules-context",
+        "ref": "v0.2.0",
         "rev": "25b95f71f80ee8cce6807ca53f357b2331cc0866",
         "revCount": 44,
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/logos-zone-sequencer-module"
       },
       "original": {
-        "ref": "feat/modernize-modules-context",
+        "ref": "v0.2.0",
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/logos-zone-sequencer-module"
       }

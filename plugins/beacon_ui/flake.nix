@@ -7,7 +7,7 @@
     # Dependency the backend consumes via modules() — attr name MUST match
     # metadata.json "dependencies". logos_beacon owns the zone_sequencer hop, so
     # this points at the beacon repo root (which builds the logos_beacon module).
-    logos_beacon.url = "git+file:///home/alisher/basecamp/modules/beacon-basecamp?ref=feat/v0.2-modernized-sequencer-logosresult";
+    logos_beacon.url = "git+file:///home/alisher/basecamp/modules/beacon-basecamp?ref=main";
   };
 
   outputs = inputs@{ logos-module-builder, ... }:
