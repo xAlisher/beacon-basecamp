@@ -41823,14 +41823,14 @@
       "locked": {
         "lastModified": 1782908706,
         "narHash": "sha256-1AwVqbm+KHvmbPdJn/0lqTbsLLdxb+ScnGaYMKtIbgo=",
-        "ref": "feat/modernize-modules-context",
+        "ref": "v0.2.0",
         "rev": "25b95f71f80ee8cce6807ca53f357b2331cc0866",
         "revCount": 44,
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/logos-zone-sequencer-module"
       },
       "original": {
-        "ref": "feat/modernize-modules-context",
+        "ref": "v0.2.0",
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/logos-zone-sequencer-module"
       }
