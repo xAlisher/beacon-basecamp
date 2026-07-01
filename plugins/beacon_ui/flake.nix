@@ -5,8 +5,9 @@
     logos-module-builder.url = "github:logos-co/logos-module-builder/0.2.0";
     nix-bundle-lgx.url = "github:logos-co/nix-bundle-lgx";
     # Dependency the backend consumes via modules() — attr name MUST match
-    # metadata.json "dependencies".
-    zone_sequencer.url = "git+file:///home/alisher/basecamp/modules/logos-zone-sequencer-module?ref=feat/modernize-modules-context";
+    # metadata.json "dependencies". logos_beacon owns the zone_sequencer hop, so
+    # this points at the beacon repo root (which builds the logos_beacon module).
+    logos_beacon.url = "git+file:///home/alisher/basecamp/modules/beacon-basecamp?ref=feat/v0.2-modernized-sequencer-logosresult";
   };
 
   outputs = inputs@{ logos-module-builder, ... }:

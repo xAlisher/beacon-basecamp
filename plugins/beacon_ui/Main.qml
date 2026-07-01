@@ -55,10 +55,13 @@ Item {
         onTriggered: {
             var t = root._pendingInscribeText
             root._pendingInscribeText = ""
-            var ok = root.inscribeText(t)
-            root.inscribeBusy = false
-            if (!ok && typeof inscribeInput !== "undefined" && inscribeInput.text.length === 0)
-                inscribeInput.text = t   // busy/failed before publish — give the text back
+            // inscribeText is async now (backend → modules().logos_beacon); resolve
+            // the busy flag / text-restore in its completion callback.
+            root.inscribeText(t, function (ok) {
+                root.inscribeBusy = false
+                if (!ok && typeof inscribeInput !== "undefined" && inscribeInput.text.length === 0)
+                    inscribeInput.text = t   // busy/failed before publish — give the text back
+            })
         }
     }
 
@@ -71,12 +74,15 @@ Item {
     property bool   keycardConnected:  false
     property bool   authInFlight:      false   // guard against concurrent auth calls
 
-    // ── zone_sequencer bridge (v2) ────────────────────────────────────────────
-    // The modernized zone_sequencer is a Qt-free universal module; legacy
-    // logos.callModule can't reach it (returns "null" — beacon#30). We call it
-    // through beacon_ui's own C++ QtRO backend via logos.module() + logos.watch().
-    readonly property var seq: (typeof logos !== "undefined" && logos.module)
-                               ? logos.module("beacon_ui") : null
+    // ── logos_beacon bridge (v0.2) ────────────────────────────────────────────
+    // logos_beacon (and its zone_sequencer hop) are Qt-free universal modules;
+    // legacy logos.callModule can't reach them (returns "null" — beacon#30). We
+    // call them through beacon_ui's own C++ QtRO backend, which forwards to
+    // modules().logos_beacon.*, via logos.module("beacon_ui") + logos.watch().
+    readonly property var beacon: (typeof logos !== "undefined" && logos.module)
+                                  ? logos.module("beacon_ui") : null
+    property bool beaconReady:  false   // backend QtRO context wired (isViewModuleReady)
+    property bool _initialized: false   // one-shot init guard
 
     // ── Per-module channels cache ─────────────────────────────────────────────
     property var moduleChannels: ({})
@@ -104,19 +110,21 @@ Item {
         } catch(e) { return null }
     }
 
-    // Extract a channel id from liblogos_zone_sequencer_module.get_channel_id.
-    // Handles the modernized module's LogosResult { success, value, error }
-    // (v0.2 LogosModuleContext) as well as the legacy raw-string / { channelId }
-    // shapes, so beacon works against either module build. Returns "" on failure.
-    function seqChannelId(raw) {
-        var ch = callModuleParse(raw)
-        if (ch && typeof ch === 'object' && ch.hasOwnProperty('success'))
-            return (ch.success && ch.value) ? String(ch.value) : ""
-        if (typeof ch === 'string')
-            return (ch.length > 0 && !ch.toLowerCase().startsWith("error")) ? ch : ""
-        if (ch && ch.channelId) return String(ch.channelId)
-        return ""
+    // A seq* backend result (seqDeriveChannel / seqPublish) is either the plain
+    // value string (channel id / tx hash) on success, or a {"error": "..."} JSON
+    // string on failure — errors resolve through logos.watch's success callback,
+    // not its reject path (the bridge only rejects on QtRO transport failure).
+    // Returns the value string, or "" on any error.
+    function seqResult(raw) {
+        if (raw === undefined || raw === null) return ""
+        var s = String(raw)
+        if (s.length === 0) return ""
+        var p = callModuleParse(raw)                       // null for a bare hex string
+        if (p && typeof p === 'object' && p.error) return ""
+        if (s.toLowerCase().indexOf("error") === 0) return ""
+        return s
     }
+    function seqIsError(raw) { return seqResult(raw).length === 0 }
 
     // ── Unified feed helpers ──────────────────────────────────────────────────
     function feedEntryRow(cid, label, source, tsStr, inscriptionId, status, slotFrom, libAtSubmit) {
@@ -162,7 +170,8 @@ Item {
             root.authInFlight = false
             return
         }
-        logos.callModule("logos_beacon", "clearSigningKey", [])
+        if (root.beacon)
+            logos.watch(root.beacon.clearSigningKey(), function () {}, function () {})
         root.keycardConnected  = false
         root.keycardAuthStatus = ""
         var raw = logos.callModule("keycard", "requestAuth", ["bc:beacon", "logos_beacon"])
@@ -179,21 +188,23 @@ Item {
     }
 
     // ── Zone sequencer setup (called once after Keycard auth) ─────────────────
-    // Async: the backend's configure() runs the full set-key/node + derive +
-    // set-channel sequence on zone_sequencer via modules() and returns the
-    // channel id. done(ok) fires when it resolves.
+    // Async: the backend derives the primary channel via seqDeriveChannel
+    // (logos_beacon → modules().zone_sequencer) and returns the channel id.
+    // done(ok) fires when it resolves.
     function configureZoneSeq(done) {
-        if (!root.seq || root.signingKeyHex === "") { if (done) done(false); return }
-        logos.callModule("logos_beacon", "ensureCheckpointsDir", [])
-        logos.watch(root.seq.configure(root.signingKeyHex, root.nodeUrl),
-            function (ch) {
-                if (typeof ch === "string" && ch.length > 0 &&
-                        !ch.toLowerCase().startsWith("error")) {
+        if (!root.beacon || root.signingKeyHex === "") { if (done) done(false); return }
+        logos.watch(root.beacon.ensureCheckpointsDir(), function () {}, function () {})
+        // seqDeriveChannel is stateless (logos_beacon → modules().zone_sequencer);
+        // the old set-key/node + get_channel_id + set-channel dance is gone.
+        logos.watch(root.beacon.seqDeriveChannel(root.signingKeyHex),
+            function (chRaw) {
+                var ch = root.seqResult(chRaw)
+                if (ch.length > 0) {
                     root.channelId    = ch
                     root.zoneSeqReady = true
                     if (done) done(true)
                 } else {
-                    appendActivity("zone sequencer configure failed: " + ch, "error")
+                    appendActivity("zone sequencer configure failed: " + chRaw, "error")
                     if (done) done(false)
                 }
             },
@@ -207,22 +218,11 @@ Item {
     // Inscribes a channel_manifest entry to the primary Beacon channel so Cord
     // can discover all module channels from a single Beacon key lookup.
     function inscribeManifest(name, channelId) {
-        if (!root.zoneSeqReady || root.signingKeyHex === "" || root.channelId === "") return
+        if (!root.beacon || !root.zoneSeqReady || root.signingKeyHex === "" || root.channelId === "") return
 
-        // Fully re-initialize primary channel (mirrors configureZoneSeq) so any
-        // temporary signing-key switch in setupModuleChannel doesn't leave stale state
-        logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [root.signingKeyHex])
-        logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path",
-                         [""])  // empty = no stale-checkpoint backfill
-        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [""])
-        var chRaw2 = logos.callModule("liblogos_zone_sequencer_module", "get_channel_id", [])
-        var derivedId = seqChannelId(chRaw2)
-        if (!derivedId || derivedId.length === 0) {
-            appendActivity("manifest error for " + name + " (re-derive failed)", "error")
-            return
-        }
-        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [derivedId])
-
+        // Stateless publish to the primary Beacon channel — seqPublish carries the
+        // channel id + key explicitly, so the old set-key/set-channel re-init dance
+        // (needed only because zone_sequencer used to be stateful) is gone.
         var payload = JSON.stringify({
             v:          1,
             type:       "channel_manifest",
@@ -231,215 +231,209 @@ Item {
             ts:         Math.floor(Date.now() / 1000)
         })
 
-        var pubRaw    = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
-        var pubResult = callModuleParse(pubRaw)
-
-        var isError = false
-        if (typeof pubResult === 'string')
-            isError = pubResult.toLowerCase().startsWith("error") || pubResult.length === 0
-        else if (pubResult && pubResult.error)
-            isError = true
-
-        if (!isError) {
-            logos.callModule("logos_beacon", "recordManifest", [name])
-            var updated = {}
-            for (var k in root.manifestedModules) updated[k] = root.manifestedModules[k]
-            updated[name] = true
-            root.manifestedModules = updated
-            appendActivity("manifested " + name + " channel — " + channelId.substring(0,16) + "…", "success")
-        } else {
-            appendActivity("manifest error for " + name, "error")
-        }
+        logos.watch(root.beacon.seqPublish(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload),
+            function (pubRaw) {
+                if (root.seqIsError(pubRaw)) {
+                    appendActivity("manifest error for " + name, "error")
+                    return
+                }
+                logos.watch(root.beacon.recordManifest(name), function () {}, function () {})
+                var updated = {}
+                for (var k in root.manifestedModules) updated[k] = root.manifestedModules[k]
+                updated[name] = true
+                root.manifestedModules = updated
+                appendActivity("manifested " + name + " channel — " + channelId.substring(0,16) + "…", "success")
+            },
+            function (e) {
+                appendActivity("manifest error for " + name + ": " + e, "error")
+            })
     }
 
     // ── Per-module channel derivation ─────────────────────────────────────────
-    function setupModuleChannel(name) {
-        if (root.moduleChannels[name]) return
+    // Async now: derives the module's signing key + channel id via the backend and
+    // caches them. done(mc) fires with the cached { signingKey, channelId } entry,
+    // or null on failure. seqDeriveChannel is stateless, so there's no primary-
+    // channel state to save/restore anymore.
+    function setupModuleChannel(name, done) {
+        if (root.moduleChannels[name]) { if (done) done(root.moduleChannels[name]); return }
+        if (!root.beacon) { if (done) done(null); return }
 
-        var raw = logos.callModule("logos_beacon", "deriveModuleSigningKey", [name])
-        var r = callModuleParse(raw)
-        if (!r || !r.signingKey) return
-        var sk = r.signingKey
-
-        logos.callModule("liblogos_zone_sequencer_module", "set_signing_key", [sk])
-        logos.callModule("liblogos_zone_sequencer_module", "set_channel_id", [""])
-        var chRaw = logos.callModule("liblogos_zone_sequencer_module", "get_channel_id", [])
-        var channelId = seqChannelId(chRaw)
-
-        // Restore primary channel before any early return
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_signing_key", [root.signingKeyHex])
-        logos.callModule("liblogos_zone_sequencer_module",
-                         "set_channel_id", [root.channelId])
-
-        if (!channelId || channelId.toLowerCase().startsWith("error")) return
-
-        var updated = {}
-        var existing = root.moduleChannels
-        for (var key in existing) updated[key] = existing[key]
-        updated[name] = { signingKey: sk, channelId: channelId }
-        root.moduleChannels = updated
+        logos.watch(root.beacon.deriveModuleSigningKey(name),
+            function (raw) {
+                var r = callModuleParse(raw)
+                if (!r || !r.signingKey) { if (done) done(null); return }
+                var sk = r.signingKey
+                logos.watch(root.beacon.seqDeriveChannel(sk),
+                    function (chRaw) {
+                        var channelId = root.seqResult(chRaw)
+                        if (channelId.length === 0) { if (done) done(null); return }
+                        var updated = {}
+                        var existing = root.moduleChannels
+                        for (var key in existing) updated[key] = existing[key]
+                        updated[name] = { signingKey: sk, channelId: channelId }
+                        root.moduleChannels = updated
+                        if (done) done(updated[name])
+                    },
+                    function (e) { if (done) done(null) })
+            },
+            function (e) { if (done) done(null) })
     }
 
     // ── Inscription flow ──────────────────────────────────────────────────────
     // rawPayload (optional): publish this exact string instead of a cid_pin JSON —
     // the free-text inscribe path for preparing test/campaign channels (#25)
-    function inscribeCid(cid, label, source, rawPayload) {
-        if (root.pollBusy) return
+    // Fully async now: every hop (getNodeInfo → setupModuleChannel → pinCid →
+    // seqPublish → confirmInscription) goes through the backend via logos.watch.
+    // done(ok) reports the outcome the old synchronous return used to carry.
+    function inscribeCid(cid, label, source, rawPayload, done) {
+        function finish(ok) { root.pollBusy = false; if (done) done(ok) }
+        if (root.pollBusy) { if (done) done(false); return }
+        if (!root.beacon)  { if (done) done(false); return }
         root.pollBusy = true
 
         // Capture node slot / lib_slot for slotFrom, libAtSubmit, and progress tracking
-        var nodeSlot = 0
-        var libSlot  = 0
-        var infoRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
-        var info = callModuleParse(infoRaw)
-        if (info && info.slot) {
-            nodeSlot = info.slot
-            libSlot  = info.lib_slot || 0
-            root.currentLibSlot = libSlot
-        }
+        logos.watch(root.beacon.getNodeInfo(), function (infoRaw) {
+            var nodeSlot = 0
+            var libSlot  = 0
+            var info = callModuleParse(infoRaw)
+            if (info && info.slot) {
+                nodeSlot = info.slot
+                libSlot  = info.lib_slot || 0
+                root.currentLibSlot = libSlot
+            }
 
-        var useKey, useChannelId, useCheckpoint = ""
-        if (source && source.length > 0) {
-            setupModuleChannel(source)
-            var mc = root.moduleChannels[source]
-            if (mc) {
-                useKey       = mc.signingKey
-                useChannelId = mc.channelId
+            // Resolve the target channel/key, then run pin + publish.
+            function afterChannel(useKey, useChannelId) {
+                var useCheckpoint = ""
+                logos.watch(root.beacon.pinCid(cid, label, source || "", nodeSlot, libSlot),
+                    function (pinRaw) {
+                        var pin = callModuleParse(pinRaw)
+                        if (!pin || pin.error) {
+                            appendActivity("error: pinCid " + (pin ? pin.error : "null"), "error")
+                            finish(false); return
+                        }
+                        if (pin.duplicate === true) {
+                            appendActivity("duplicate: " + cid.substring(0,16) + "…", "muted")
+                            finish(true); return  // confirmed on-chain — caller should markInscribed
+                        }
+
+                        var entryIndex = pin.entryIndex
+                        logModel.append(feedEntryRow(cid, label, source || "",
+                            Qt.formatDateTime(new Date(), "HH:mm:ss"), "", "queued", nodeSlot, libSlot))
+
+                        var payload = (rawPayload && rawPayload.length > 0) ? rawPayload : JSON.stringify({
+                            v:      1,
+                            type:   "cid_pin",
+                            cid:    cid,
+                            label:  label,
+                            source: source || "",
+                            ts:     Math.floor(Date.now() / 1000)
+                        })
+
+                        var pubStarted = Date.now()
+                        // seqPublish is stateless (carries channel + key + node url),
+                        // so primary and sub-channel publishes take the same path.
+                        logos.watch(root.beacon.seqPublish(root.nodeUrl, useChannelId, useKey, useCheckpoint, payload),
+                            function (pubRaw) {
+                                var feedRow
+                                if (root.seqIsError(pubRaw)) {
+                                    // The bridge gives up at ~20s but the publish keeps
+                                    // running module-side (first publish pays SDK
+                                    // connect/backfill). An error AFTER the timeout
+                                    // window means "result lost", not "failed" — hand it
+                                    // to the finalization scan (confirms from the chain,
+                                    // needs no inscription_id). Fast errors are real.
+                                    if (Date.now() - pubStarted >= 18000) {
+                                        logos.watch(root.beacon.confirmInscription(entryIndex, "", "submitted"), function () {}, function () {})
+                                        feedRow = feedRowFor(cid)
+                                        if (feedRow >= 0)
+                                            logModel.setProperty(feedRow, "status", "submitted")
+                                        var pfSlow = root.pendingFinalizations.slice()
+                                        pfSlow.push({ entryIndex: entryIndex, channelId: useChannelId,
+                                                      slotFrom: nodeSlot, libAtSubmit: libSlot, cid: cid })
+                                        root.pendingFinalizations = pfSlow
+                                        appendActivity("[" + (source || "primary") + "] publish reply timed out — watching the chain for confirmation", "info")
+                                        finish(true); return
+                                    }
+                                    logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
+                                    feedRow = feedRowFor(cid)
+                                    if (feedRow >= 0)
+                                        logModel.setProperty(feedRow, "status", "failed")
+                                    appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
+                                    finish(false); return
+                                }
+
+                                // Submitted — deferred confirmation via finalizationTimer
+                                logos.watch(root.beacon.confirmInscription(entryIndex, "", "submitted"), function () {}, function () {})
+                                feedRow = feedRowFor(cid)
+                                if (feedRow >= 0)
+                                    logModel.setProperty(feedRow, "status", "submitted")
+
+                                var updatedPF = root.pendingFinalizations.slice()
+                                updatedPF.push({
+                                    entryIndex:  entryIndex,
+                                    channelId:   useChannelId,
+                                    slotFrom:    nodeSlot,
+                                    libAtSubmit: libSlot,
+                                    cid:         cid
+                                })
+                                root.pendingFinalizations = updatedPF
+
+                                appendActivity("[" + (source || "primary") + "] submitted — " + cid.substring(0,16) + "… awaiting finalization", "info")
+
+                                // Manifest module channel to primary Beacon channel on first successful inscription
+                                if (source && source.length > 0
+                                        && root.moduleChannels[source]
+                                        && !root.manifestedModules[source]) {
+                                    inscribeManifest(source, root.moduleChannels[source].channelId)
+                                }
+
+                                finish(true)
+                            },
+                            function (e) {
+                                logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
+                                var fr = feedRowFor(cid)
+                                if (fr >= 0)
+                                    logModel.setProperty(fr, "status", "failed")
+                                appendActivity("[" + (source || "primary") + "] inscription error — " + e, "error")
+                                finish(false)
+                            })
+                    },
+                    function (e) { appendActivity("error: pinCid " + e, "error"); finish(false) })
+            }
+
+            if (source && source.length > 0) {
+                setupModuleChannel(source, function (mc) {
+                    if (mc) {
+                        afterChannel(mc.signingKey, mc.channelId)
+                    } else {
+                        appendActivity("using primary channel for " + source, "info")
+                        afterChannel(root.signingKeyHex, root.channelId)
+                    }
+                })
             } else {
-                appendActivity("using primary channel for " + source, "info")
-                useKey       = root.signingKeyHex
-                useChannelId = root.channelId
+                afterChannel(root.signingKeyHex, root.channelId)
             }
-        } else {
-            useKey       = root.signingKeyHex
-            useChannelId = root.channelId
-        }
-
-        var pinRaw = logos.callModule("logos_beacon", "pinCid",
-                                      [cid, label, source || "", nodeSlot, libSlot])
-        var pin    = callModuleParse(pinRaw)
-
-        if (!pin || pin.error) {
-            appendActivity("error: pinCid " + (pin ? pin.error : "null"), "error")
-            root.pollBusy = false; return false
-        }
-        if (pin.duplicate === true) {
-            appendActivity("duplicate: " + cid.substring(0,16) + "…", "muted")
-            root.pollBusy = false; return true  // confirmed on-chain — caller should markInscribed
-        }
-
-        var entryIndex = pin.entryIndex
-
-        logModel.append(feedEntryRow(cid, label, source || "",
-            Qt.formatDateTime(new Date(), "HH:mm:ss"), "", "queued", nodeSlot, libSlot))
-
-        var payload = (rawPayload && rawPayload.length > 0) ? rawPayload : JSON.stringify({
-            v:      1,
-            type:   "cid_pin",
-            cid:    cid,
-            label:  label,
-            source: source || "",
-            ts:     Math.floor(Date.now() / 1000)
-        })
-
-        var pubStarted = Date.now()
-        var pubRaw
-        if (useChannelId === root.channelId) {
-            // Primary beacon channel — use the persistent sequencer handle (fast path)
-            pubRaw = logos.callModule("liblogos_zone_sequencer_module", "publish", [payload])
-        } else {
-            // Re-assert node URL — cord (or another plugin) may have overwritten the shared state.
-            logos.callModule("liblogos_zone_sequencer_module", "set_node_url", [root.nodeUrl])
-            // Module sub-channel — use stateless publish_to so the correct channel is used.
-            pubRaw = logos.callModule("liblogos_zone_sequencer_module",
-                                      "publish_to", [useChannelId, useKey, useCheckpoint, payload])
-        }
-        var pubResult = callModuleParse(pubRaw)
-
-        var isError = false
-        if (typeof pubResult === 'string') {
-            isError = pubResult.toLowerCase().startsWith("error") || pubResult.length === 0
-        } else if (pubResult && pubResult.error) {
-            isError = true
-        }
-
-        var feedRow
-        if (isError) {
-            // The IPC bridge gives up at ~20s but zone_sequencer_publish keeps
-            // running module-side (first publish pays SDK connect/backfill). An
-            // error AFTER the timeout window means "result lost", not "failed" —
-            // hand it to the finalization scan, which confirms from the chain
-            // and needs no inscription_id. Fast errors are real failures.
-            if (Date.now() - pubStarted >= 18000) {
-                logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "submitted"])
-                feedRow = feedRowFor(cid)
-                if (feedRow >= 0)
-                    logModel.setProperty(feedRow, "status", "submitted")
-                var pfSlow = root.pendingFinalizations.slice()
-                pfSlow.push({ entryIndex: entryIndex, channelId: useChannelId,
-                              slotFrom: nodeSlot, libAtSubmit: libSlot, cid: cid })
-                root.pendingFinalizations = pfSlow
-                appendActivity("[" + (source || "primary") + "] publish reply timed out — watching the chain for confirmation", "info")
-                root.pollBusy = false
-                return true
-            }
-            logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "failed"])
-            feedRow = feedRowFor(cid)
-            if (feedRow >= 0)
-                logModel.setProperty(feedRow, "status", "failed")
-            appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
-            root.pollBusy = false
-            return false
-        }
-
-        // Submitted — deferred confirmation via finalizationTimer (block scan → real explorer hash)
-        logos.callModule("logos_beacon", "confirmInscription", [entryIndex, "", "submitted"])
-        feedRow = feedRowFor(cid)
-        if (feedRow >= 0)
-            logModel.setProperty(feedRow, "status", "submitted")
-
-        var updatedPF = root.pendingFinalizations.slice()
-        updatedPF.push({
-            entryIndex:  entryIndex,
-            channelId:   useChannelId,
-            slotFrom:    nodeSlot,
-            libAtSubmit: libSlot,
-            cid:         cid
-        })
-        root.pendingFinalizations = updatedPF
-
-        appendActivity("[" + (source || "primary") + "] submitted — " + cid.substring(0,16) + "… awaiting finalization", "info")
-
-
-        // Manifest module channel to primary Beacon channel on first successful inscription
-        if (source && source.length > 0
-                && root.moduleChannels[source]
-                && !root.manifestedModules[source]) {
-            inscribeManifest(source, root.moduleChannels[source].channelId)
-        }
-
-        root.pollBusy = false
-        return true
+        }, function (e) { appendActivity("error: getNodeInfo " + e, "error"); finish(false) })
     }
 
     // ── Free-text inscribe (#25) — publishes the typed text verbatim to the
     // primary channel; pseudo-cid keys the feed row and stays unique so pinCid's
     // duplicate guard never trips. Used to prepare campaign/test channels.
-    function inscribeText(text) {
+    function inscribeText(text, done) {
         var t = text.trim()
-        if (t.length === 0) return false
-        return inscribeCid("text:" + Date.now(), t, "", t)
+        if (t.length === 0) { if (done) done(false); return }
+        inscribeCid("text:" + Date.now(), t, "", t, done)
     }
 
     // ── Broadcast channel announce (kept for future use; not exposed in UI) ───
     function broadcastChannel() {
         if (root.pollBusy) return
-        if (!root.zoneSeqReady || root.channelId === "") return
+        if (!root.beacon || !root.zoneSeqReady || root.channelId === "") return
         root.pollBusy = true
         root.broadcastStatus = ""
 
-        logos.callModule("logos_beacon", "setChannelLabel", [root.channelLabel])
+        logos.watch(root.beacon.setChannelLabel(root.channelLabel), function () {}, function () {})
 
         var payload = JSON.stringify({
             v:          1,
@@ -450,19 +444,15 @@ Item {
             ts:         Math.floor(Date.now() / 1000)
         })
 
-        var pubRaw    = logos.callModule("liblogos_zone_sequencer_module",
-                                         "publish", [payload])
-        var pubResult = callModuleParse(pubRaw)
-
-        var isError = false
-        if (typeof pubResult === 'string') {
-            isError = pubResult.toLowerCase().startsWith("error") || pubResult.length === 0
-        } else if (pubResult && pubResult.error) {
-            isError = true
-        }
-
-        root.broadcastStatus = isError ? "error" : "ok"
-        root.pollBusy = false
+        logos.watch(root.beacon.seqPublish(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload),
+            function (pubRaw) {
+                root.broadcastStatus = root.seqIsError(pubRaw) ? "error" : "ok"
+                root.pollBusy = false
+            },
+            function (e) {
+                root.broadcastStatus = "error"
+                root.pollBusy = false
+            })
     }
 
     // ── Module inscription queue polling ─────────────────────────────────────
@@ -472,68 +462,78 @@ Item {
         if (typeof logos === "undefined" || !logos.callModule) return
         if (root.watchedSources.length === 0) return
 
-        root.pollBusy = true
-
+        // Gather queued entries across all watched sources. getInscriptionQueue /
+        // markInscribed target legacy source modules (keeper, stash, …) reachable
+        // via callModule — only the logos_beacon/zone_sequencer hop moved to the
+        // backend. Collect synchronously, then inscribe one at a time (inscribeCid
+        // is async and self-guards pollBusy).
+        var pending = []
         for (var i = 0; i < root.watchedSources.length; i++) {
             var moduleName = root.watchedSources[i]
             var queueRaw   = logos.callModule(moduleName, "getInscriptionQueue", [])
             var queue      = callModuleParse(queueRaw)
             if (!Array.isArray(queue) || queue.length === 0) continue
-
             for (var j = 0; j < queue.length; j++) {
                 var entry = queue[j]
                 if (!entry.cid) continue
-                appendActivity("queued from " + moduleName + ": " + entry.cid.substring(0, 16) + "…", "info")
-                root.pollBusy = false
-                var inscribed = inscribeCid(entry.cid, entry.label || entry.cid, moduleName)
-                root.pollBusy = true
-                if (inscribed)
-                    logos.callModule(moduleName, "markInscribed", [entry.cid])
+                pending.push({ moduleName: moduleName, cid: entry.cid, label: entry.label || entry.cid })
             }
         }
+        if (pending.length === 0) return
 
-        root.pollBusy = false
+        function processNext(idx) {
+            if (idx >= pending.length) return
+            var p = pending[idx]
+            appendActivity("queued from " + p.moduleName + ": " + p.cid.substring(0, 16) + "…", "info")
+            inscribeCid(p.cid, p.label, p.moduleName, "", function (inscribed) {
+                if (inscribed)
+                    logos.callModule(p.moduleName, "markInscribed", [p.cid])
+                processNext(idx + 1)
+            })
+        }
+        processNext(0)
     }
 
     // ── Anchor tx resolution (module sub-channels) ────────────────────────────
     // ── Log refresh ───────────────────────────────────────────────────────────
     function refreshLog() {
-        if (typeof logos === "undefined" || !logos.callModule) return
+        if (!root.beacon) return
 
-        var raw     = logos.callModule("logos_beacon", "getInscriptionLog", [])
-        var entries = callModuleParse(raw)
-        if (!Array.isArray(entries)) return
+        logos.watch(root.beacon.getInscriptionLog(), function (raw) {
+            var entries = callModuleParse(raw)
+            if (!Array.isArray(entries)) return
 
-        // in-place sync keyed by cid — never clear/rebuild: activity rows and the
-        // scroll position survive the 5s refresh
-        var count = 0
-        var seen = {}
-        for (var i = 0; i < entries.length; i++) {
-            var e  = entries[i]
-            var cid = e.cid || ""
-            seen[cid] = true
-            var row = feedRowFor(cid)
-            if (row < 0) {
-                logModel.append(feedEntryRow(cid, e.label || "", e.source || "",
-                    Qt.formatDateTime(new Date(e.ts * 1000), "HH:mm:ss"),
-                    e.inscriptionId || "", e.status || "pending",
-                    e.slotFrom || 0, e.libAtSubmit || 0))
-            } else {
-                var cur = logModel.get(row)
-                if (cur.status !== (e.status || "pending"))
-                    logModel.setProperty(row, "status", e.status || "pending")
-                if (cur.inscriptionId !== (e.inscriptionId || ""))
-                    logModel.setProperty(row, "inscriptionId", e.inscriptionId || "")
-                if (cur.label !== (e.label || ""))
-                    logModel.setProperty(row, "label", e.label || "")
+            // in-place sync keyed by cid — never clear/rebuild: activity rows and the
+            // scroll position survive the 5s refresh
+            var count = 0
+            var seen = {}
+            for (var i = 0; i < entries.length; i++) {
+                var e  = entries[i]
+                var cid = e.cid || ""
+                seen[cid] = true
+                var row = feedRowFor(cid)
+                if (row < 0) {
+                    logModel.append(feedEntryRow(cid, e.label || "", e.source || "",
+                        Qt.formatDateTime(new Date(e.ts * 1000), "HH:mm:ss"),
+                        e.inscriptionId || "", e.status || "pending",
+                        e.slotFrom || 0, e.libAtSubmit || 0))
+                } else {
+                    var cur = logModel.get(row)
+                    if (cur.status !== (e.status || "pending"))
+                        logModel.setProperty(row, "status", e.status || "pending")
+                    if (cur.inscriptionId !== (e.inscriptionId || ""))
+                        logModel.setProperty(row, "inscriptionId", e.inscriptionId || "")
+                    if (cur.label !== (e.label || ""))
+                        logModel.setProperty(row, "label", e.label || "")
+                }
+                if (e.status === "ok" || e.status === "confirmed") count++
             }
-            if (e.status === "ok" || e.status === "confirmed") count++
-        }
-        for (var j = logModel.count - 1; j >= 0; j--) {
-            var r = logModel.get(j)
-            if (r.rowType === "entry" && !seen[r.cid]) logModel.remove(j)
-        }
-        root.inscribedCount = count
+            for (var j = logModel.count - 1; j >= 0; j--) {
+                var r = logModel.get(j)
+                if (r.rowType === "entry" && !seen[r.cid]) logModel.remove(j)
+            }
+            root.inscribedCount = count
+        }, function () {})
     }
 
     // Re-arm pendingFinalizations from the persisted log (C++ index = entryIndex
@@ -541,93 +541,143 @@ Item {
     // startup and the post-auth path — they used to be two diverging copies, one
     // of which dropped cid/libAtSubmit and broke the confirm message.
     function restoreInFlight(label) {
-        var rLogRaw = logos.callModule("logos_beacon", "getInscriptionLog", [])
-        var rLog = callModuleParse(rLogRaw)
-        if (!Array.isArray(rLog)) return
-        var restored = []
-        for (var ri = 0; ri < rLog.length; ri++) {
-            var re = rLog[ri]
-            if ((re.status === "submitted" || re.status === "finalizing" || re.status === "queued")
-                    && (re.slotFrom || 0) > 0) {
-                var chId = root.channelId || ""
-                if (re.source && re.source.length > 0) {
-                    setupModuleChannel(re.source)
-                    var rmc = root.moduleChannels[re.source]
-                    if (rmc) chId = rmc.channelId
+        if (!root.beacon) return
+        logos.watch(root.beacon.getInscriptionLog(), function (rLogRaw) {
+            var rLog = callModuleParse(rLogRaw)
+            if (!Array.isArray(rLog)) return
+
+            // Collect candidates first (index = C++ log index = entryIndex), then
+            // resolve each source's channel via the async setupModuleChannel before
+            // committing pendingFinalizations.
+            var candidates = []
+            for (var ri = 0; ri < rLog.length; ri++) {
+                var re = rLog[ri]
+                if ((re.status === "submitted" || re.status === "finalizing" || re.status === "queued")
+                        && (re.slotFrom || 0) > 0) {
+                    candidates.push({ index: ri, entry: re })
                 }
-                restored.push({
-                    entryIndex:  ri,
-                    channelId:   chId,
-                    slotFrom:    re.slotFrom || 0,
-                    libAtSubmit: re.libAtSubmit || 0,
-                    cid:         re.cid || ""
-                })
             }
-        }
-        if (restored.length > 0) {
-            root.pendingFinalizations = restored
-            appendActivity(label.replace("%1", restored.length), "info")
-        }
+            if (candidates.length === 0) return
+
+            var restored  = []
+            var remaining = candidates.length
+            function one() {
+                remaining--
+                if (remaining === 0 && restored.length > 0) {
+                    root.pendingFinalizations = restored
+                    appendActivity(label.replace("%1", restored.length), "info")
+                }
+            }
+            for (var ci = 0; ci < candidates.length; ci++) {
+                (function (c) {
+                    var re = c.entry
+                    function push(chId) {
+                        restored.push({
+                            entryIndex:  c.index,
+                            channelId:   chId,
+                            slotFrom:    re.slotFrom || 0,
+                            libAtSubmit: re.libAtSubmit || 0,
+                            cid:         re.cid || ""
+                        })
+                        one()
+                    }
+                    if (re.source && re.source.length > 0) {
+                        setupModuleChannel(re.source, function (mc) {
+                            push(mc ? mc.channelId : (root.channelId || ""))
+                        })
+                    } else {
+                        push(root.channelId || "")
+                    }
+                })(candidates[ci])
+            }
+        }, function () {})
     }
 
     // ── Modules refresh ───────────────────────────────────────────────────────
     function refreshModules() {
-        if (typeof logos === "undefined" || !logos.callModule) return
+        if (!root.beacon) return
 
-        var raw  = logos.callModule("logos_beacon", "getModules", [])
-        var list = callModuleParse(raw)
-        if (!Array.isArray(list)) return
+        logos.watch(root.beacon.getModules(), function (raw) {
+            var list = callModuleParse(raw)
+            if (!Array.isArray(list)) return
 
-        modulesModel.clear()
-        for (var i = 0; i < list.length; i++) {
-            modulesModel.append({
-                name:     list[i].name     || "",
-                cidCount: list[i].cidCount || 0,
-                lastTs:   list[i].lastTs   || 0
-            })
-            if (list[i].name) setupModuleChannel(list[i].name)
-        }
+            modulesModel.clear()
+            for (var i = 0; i < list.length; i++) {
+                modulesModel.append({
+                    name:     list[i].name     || "",
+                    cidCount: list[i].cidCount || 0,
+                    lastTs:   list[i].lastTs   || 0
+                })
+                if (list[i].name) setupModuleChannel(list[i].name)   // async; caches
+            }
+        }, function () {})
     }
 
     // ── Startup ───────────────────────────────────────────────────────────────
-    Component.onCompleted: {
-        if (typeof logos === "undefined" || !logos.callModule) return
+    // The backend's QtRO context must be ready before any modules().logos_beacon
+    // call succeeds, so gate the initial loads on isViewModuleReady / the
+    // onViewModuleReadyChanged signal (the canonical universal-module readiness gate).
+    function initFromBackend() {
+        if (root._initialized) return
+        if (!root.beacon) return
+        root._initialized = true
 
-        var cfgRaw = logos.callModule("logos_beacon", "getBeaconConfig", [])
-        var cfg    = callModuleParse(cfgRaw)
-        if (!cfg) return
+        logos.watch(root.beacon.getBeaconConfig(), function (cfgRaw) {
+            var cfg = callModuleParse(cfgRaw)
+            if (!cfg) return
+            root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
+            root.explorerUrl     = cfg.explorerUrl     || root.explorerUrl
+            root.persistencePath = cfg.persistencePath || ""
+            root.channelLabel    = cfg.channelLabel    || "My Beacon"
+            if (typeof nodeUrlInput !== "undefined")
+                nodeUrlInput.text = root.nodeUrl
+        }, function () {})
 
-        root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
-        root.explorerUrl     = cfg.explorerUrl     || root.explorerUrl
-
-        var wsRaw = callModuleParse(logos.callModule("logos_beacon", "getWatchedSources", []))
-        if (wsRaw && Array.isArray(wsRaw.sources) && wsRaw.sources.length > 0)
-            root.watchedSources = wsRaw.sources
-        if (typeof sourcesInput !== "undefined")
-            sourcesInput.text = root.watchedSources.join("\n")
-
-        root.persistencePath = cfg.persistencePath || ""
-        root.channelLabel    = cfg.channelLabel    || "My Beacon"
+        logos.watch(root.beacon.getWatchedSources(), function (wsRawStr) {
+            var wsRaw = callModuleParse(wsRawStr)
+            if (wsRaw && Array.isArray(wsRaw.sources) && wsRaw.sources.length > 0)
+                root.watchedSources = wsRaw.sources
+            if (typeof sourcesInput !== "undefined")
+                sourcesInput.text = root.watchedSources.join("\n")
+        }, function () {})
 
         // Load already-manifested modules so we don't re-inscribe on restart
-        var mRaw = logos.callModule("logos_beacon", "getManifestLog", [])
-        var mList = callModuleParse(mRaw)
-        if (Array.isArray(mList)) {
-            var mm = {}
-            for (var mi = 0; mi < mList.length; mi++) mm[mList[mi]] = true
-            root.manifestedModules = mm
-        }
-
-        nodeUrlInput.text = root.nodeUrl
+        logos.watch(root.beacon.getManifestLog(), function (mRaw) {
+            var mList = callModuleParse(mRaw)
+            if (Array.isArray(mList)) {
+                var mm = {}
+                for (var mi = 0; mi < mList.length; mi++) mm[mList[mi]] = true
+                root.manifestedModules = mm
+            }
+        }, function () {})
 
         refreshLog()
 
-        var niRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
-        var ni = callModuleParse(niRaw)
-        if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
+        logos.watch(root.beacon.getNodeInfo(), function (niRaw) {
+            var ni = callModuleParse(niRaw)
+            if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
+        }, function () {})
 
         // Restore in-flight finalizations that survived a restart
         restoreInFlight("restored %1 pending finalization(s) after restart")
+    }
+
+    Connections {
+        target: logos
+        function onViewModuleReadyChanged(moduleName, isReady) {
+            if (moduleName === "beacon_ui") {
+                root.beaconReady = isReady && root.beacon !== null
+                if (root.beaconReady) root.initFromBackend()
+            }
+        }
+    }
+
+    Component.onCompleted: {
+        if (typeof logos === "undefined" || !logos.module) return
+        if (root.beacon !== null && logos.isViewModuleReady("beacon_ui")) {
+            root.beaconReady = true
+            root.initFromBackend()
+        }
     }
 
     // ── Timers ────────────────────────────────────────────────────────────────
@@ -644,12 +694,14 @@ Item {
         running:  root.keycardConnected
         repeat:   true
         onTriggered: {
+            if (!root.beacon) return
             root.refreshLog()
             root.refreshModules()
             // Keep currentLibSlot fresh for in-flight progress bars
-            var niRaw = logos.callModule("logos_beacon", "getNodeInfo", [])
-            var ni = root.callModuleParse(niRaw)
-            if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
+            logos.watch(root.beacon.getNodeInfo(), function (niRaw) {
+                var ni = root.callModuleParse(niRaw)
+                if (ni && ni.lib_slot) root.currentLibSlot = ni.lib_slot
+            }, function () {})
         }
     }
 
@@ -662,75 +714,94 @@ Item {
         onTriggered: {
             if (root.pendingFinalizations.length === 0) return
             if (root.finalizationBusy) return
-            if (typeof logos === "undefined" || !logos.callModule) return
+            if (!root.beacon) return
             root.finalizationBusy = true
 
-            var niRaw2 = logos.callModule("logos_beacon", "getNodeInfo", [])
-            var ni2 = root.callModuleParse(niRaw2)
-            if (ni2 && ni2.lib_slot) root.currentLibSlot = ni2.lib_slot
-            var libNow = root.currentLibSlot
+            logos.watch(root.beacon.getNodeInfo(), function (niRaw2) {
+                var ni2 = root.callModuleParse(niRaw2)
+                if (ni2 && ni2.lib_slot) root.currentLibSlot = ni2.lib_slot
+                var libNow = root.currentLibSlot
 
-            var remaining = []
-            var pf = root.pendingFinalizations
-            for (var i = 0; i < pf.length; i++) {
-                var item = pf[i]
+                var pf = root.pendingFinalizations
+                var remaining = []
+                var lookups   = []   // items past slotFrom → need async findExplorerTxHash
 
-                // feed row keyed by cid — entryIndex stays the C++ log index only
-                var fRow = root.feedRowFor(item.cid || "")
+                for (var i = 0; i < pf.length; i++) {
+                    var item = pf[i]
+                    // feed row keyed by cid — entryIndex stays the C++ log index only
+                    var fRow = root.feedRowFor(item.cid || "")
 
-                // Need lib_slot to have advanced past slotFrom for the tx to be finalized
-                if (libNow <= item.slotFrom) {
-                    // Update to "finalizing" once node slot has passed slotFrom
-                    if (libNow > 0 && item.slotFrom > 0 && fRow >= 0) {
-                        var curSt = logModel.get(fRow).status
-                        if (curSt === "submitted" || curSt === "queued") {
-                            logModel.setProperty(fRow, "status", "finalizing")
-                            logos.callModule("logos_beacon", "confirmInscription",
-                                            [item.entryIndex, "", "finalizing"])
+                    // Need lib_slot to have advanced past slotFrom for the tx to be finalized
+                    if (libNow <= item.slotFrom) {
+                        // Update to "finalizing" once node slot has passed slotFrom
+                        if (libNow > 0 && item.slotFrom > 0 && fRow >= 0) {
+                            var curSt = logModel.get(fRow).status
+                            if (curSt === "submitted" || curSt === "queued") {
+                                logModel.setProperty(fRow, "status", "finalizing")
+                                logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "finalizing"), function () {}, function () {})
+                            }
                         }
+                        remaining.push(item)
+                        continue
                     }
-                    remaining.push(item)
-                    continue
+                    lookups.push(item)
                 }
 
-                var slotTo = libNow
-                var fRaw = logos.callModule("logos_beacon", "findExplorerTxHash",
-                                            [item.channelId, item.slotFrom, slotTo])
-                var fResult = root.callModuleParse(fRaw)
-
-                if (fResult && fResult.found === true
-                        && fResult.txHash && fResult.txHash.length > 0) {
-                    // Confirmed — store real explorer hash
-                    logos.callModule("logos_beacon", "confirmInscription",
-                                    [item.entryIndex, fResult.txHash, "confirmed"])
-                    if (fRow >= 0) {
-                        logModel.setProperty(fRow, "inscriptionId", fResult.txHash)
-                        logModel.setProperty(fRow, "status", "confirmed")
-                    }
-                    root.inscribedCount++
-                    appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  " + fResult.txHash.substring(0, 16) + "…", "success")
-                } else if (slotTo > item.slotFrom + 14400) {
-                    // Timed out — ~4 hours of trying without success
-                    logos.callModule("logos_beacon", "confirmInscription",
-                                    [item.entryIndex, "", "failed"])
-                    if (fRow >= 0)
-                        logModel.setProperty(fRow, "status", "failed")
-                    appendActivity("failed (timeout): " + item.cid.substring(0, 16) + "…", "error")
-                } else {
-                    // Still scanning — mark finalizing if not already
-                    if (fRow >= 0) {
-                        var st2 = logModel.get(fRow).status
-                        if (st2 !== "finalizing") {
-                            logModel.setProperty(fRow, "status", "finalizing")
-                            logos.callModule("logos_beacon", "confirmInscription",
-                                            [item.entryIndex, "", "finalizing"])
-                        }
-                    }
-                    remaining.push(item)
+                if (lookups.length === 0) {
+                    root.pendingFinalizations = remaining
+                    root.finalizationBusy = false
+                    return
                 }
-            }
-            root.pendingFinalizations = remaining
-            root.finalizationBusy = false
+
+                var pending = lookups.length
+                function lookupDone() {
+                    pending--
+                    if (pending === 0) {
+                        root.pendingFinalizations = remaining
+                        root.finalizationBusy = false
+                    }
+                }
+
+                for (var k = 0; k < lookups.length; k++) {
+                    (function (item) {
+                        var fRow   = root.feedRowFor(item.cid || "")
+                        var slotTo = libNow
+                        logos.watch(root.beacon.findExplorerTxHash(item.channelId, item.slotFrom, slotTo),
+                            function (fRaw) {
+                                var fResult = root.callModuleParse(fRaw)
+                                if (fResult && fResult.found === true
+                                        && fResult.txHash && fResult.txHash.length > 0) {
+                                    // Confirmed — store real explorer hash
+                                    logos.watch(root.beacon.confirmInscription(item.entryIndex, fResult.txHash, "confirmed"), function () {}, function () {})
+                                    if (fRow >= 0) {
+                                        logModel.setProperty(fRow, "inscriptionId", fResult.txHash)
+                                        logModel.setProperty(fRow, "status", "confirmed")
+                                    }
+                                    root.inscribedCount++
+                                    appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  " + fResult.txHash.substring(0, 16) + "…", "success")
+                                } else if (slotTo > item.slotFrom + 14400) {
+                                    // Timed out — ~4 hours of trying without success
+                                    logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "failed"), function () {}, function () {})
+                                    if (fRow >= 0)
+                                        logModel.setProperty(fRow, "status", "failed")
+                                    appendActivity("failed (timeout): " + item.cid.substring(0, 16) + "…", "error")
+                                } else {
+                                    // Still scanning — mark finalizing if not already
+                                    if (fRow >= 0) {
+                                        var st2 = logModel.get(fRow).status
+                                        if (st2 !== "finalizing") {
+                                            logModel.setProperty(fRow, "status", "finalizing")
+                                            logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "finalizing"), function () {}, function () {})
+                                        }
+                                    }
+                                    remaining.push(item)
+                                }
+                                lookupDone()
+                            },
+                            function (e) { remaining.push(item); lookupDone() })
+                    })(lookups[k])
+                }
+            }, function (e) { root.finalizationBusy = false })
         }
     }
 
@@ -752,31 +823,32 @@ Item {
             if (r.status === "complete") {
                 stop()
                 root.authInFlight = false
-                var skRaw = logos.callModule("logos_beacon", "setSigningKey", [r.key])
-                var skResult = root.callModuleParse(skRaw)
-                if (!skResult || skResult.error) {
-                    root.keycardAuthStatus = "error"
-                    return
-                }
-                root.signingKeyHex = r.key
-                // configureZoneSeq is async now (backend → modules().zone_sequencer);
-                // move the completion into its callback.
-                root.configureZoneSeq(function (ok) {
-                    if (ok) {
-                        root.keycardAuthStatus = "complete"
-                        root.keycardConnected  = true
-                        appendActivity("Keycard authenticated", "success")
-                        appendActivity("zone sequencer ready — " + root.channelId.substring(0,16) + "…", "success")
-                        root.currentScreen     = "main"
-                        root.refreshModules()
-
-                        // Re-populate pendingFinalizations for any in-flight inscriptions
-                        // (handles beacon restart while inscriptions were in submitted/finalizing state)
-                        restoreInFlight("resumed %1 in-flight inscription(s)")
-                    } else {
+                // setSigningKey is async now (backend → modules().logos_beacon).
+                logos.watch(root.beacon.setSigningKey(r.key), function (skRaw) {
+                    var skResult = root.callModuleParse(skRaw)
+                    if (!skResult || skResult.error) {
                         root.keycardAuthStatus = "error"
+                        return
                     }
-                })
+                    root.signingKeyHex = r.key
+                    // configureZoneSeq is async too; move completion into its callback.
+                    root.configureZoneSeq(function (ok) {
+                        if (ok) {
+                            root.keycardAuthStatus = "complete"
+                            root.keycardConnected  = true
+                            appendActivity("Keycard authenticated", "success")
+                            appendActivity("zone sequencer ready — " + root.channelId.substring(0,16) + "…", "success")
+                            root.currentScreen     = "main"
+                            root.refreshModules()
+
+                            // Re-populate pendingFinalizations for any in-flight inscriptions
+                            // (handles beacon restart while inscriptions were in submitted/finalizing state)
+                            restoreInFlight("resumed %1 in-flight inscription(s)")
+                        } else {
+                            root.keycardAuthStatus = "error"
+                        }
+                    })
+                }, function (e) { root.keycardAuthStatus = "error" })
             } else if (r.status === "rejected" || r.status === "failed") {
                 stop()
                 root.authInFlight      = false
@@ -798,7 +870,8 @@ Item {
             var r = root.callModuleParse(raw)
             var cardGone = !r || r.state === "READER_NOT_FOUND" || r.state === "CARD_NOT_PRESENT"
             if (cardGone) {
-                logos.callModule("logos_beacon", "clearSigningKey", [])
+                if (root.beacon)
+                    logos.watch(root.beacon.clearSigningKey(), function () {}, function () {})
                 root.keycardConnected  = false
                 root.keycardAuthStatus = ""
                 root.keycardAuthId     = ""
@@ -1117,8 +1190,8 @@ Item {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        if (typeof logos === "undefined" || !logos.callModule) return
-                                        logos.callModule("logos_beacon", "setWatchedSources", [sourcesInput.text])
+                                        if (!root.beacon) return
+                                        logos.watch(root.beacon.setWatchedSources(sourcesInput.text), function () {}, function () {})
                                         root.watchedSources = sourcesInput.text.split("\n").filter(function(s){ return s.trim().length > 0 })
                                     }
                                 }
@@ -1167,8 +1240,8 @@ Item {
                                     id: saveArea
                                     anchors.fill: parent; hoverEnabled: true
                                     onClicked: {
-                                        if (typeof logos === "undefined") return
-                                        logos.callModule("logos_beacon", "setNodeUrl", [nodeUrlInput.text])
+                                        if (!root.beacon) return
+                                        logos.watch(root.beacon.setNodeUrl(nodeUrlInput.text), function () {}, function () {})
                                         root.nodeUrl = nodeUrlInput.text
                                         configureZoneSeq()
                                     }
@@ -1209,7 +1282,7 @@ Item {
 
                 Text {
                     anchors.centerIn: parent
-                    text: "Zone sequencer unavailable — install liblogos_zone_sequencer_module"
+                    text: "Zone sequencer unavailable — logos_beacon could not derive a channel"
                     color: root.errorRed
                     font.pixelSize: 11
                 }
@@ -1402,7 +1475,8 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    logos.callModule("logos_beacon", "clearInscriptionLog", [])
+                                    if (root.beacon)
+                                        logos.watch(root.beacon.clearInscriptionLog(), function () {}, function () {})
                                     logModel.clear()
                                 }
                             }
