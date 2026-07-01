@@ -136,3 +136,14 @@ Channel ID derived via `get_channel_id(signingKey)` from `liblogos_zone_sequence
   copies source to installed path, overwriting any hand-edits to the installed file.
 - **pinCid arg count mismatch**: Installed .so must match QML call signature.
   After adding the `source` arg to `pinCid`, always rebuild + reinstall.
+
+## v0.2 universal architecture (2026-07-01)
+
+The whole chain is now Qt-free universal on typed `modules()` — no getClient, no legacy callModule:
+`beacon_ui (ui_qml QtRO backend) → modules().logos_beacon (universal, Qt behind a pimpl) → modules().zone_sequencer (universal, Rust FFI) → node`. Proven end-to-end (inscription_id e49c7a37…).
+
+- **beacon_ui** is a `ui_qml` module with a C++ QtRO backend (`.rep` + `LogosUiPluginContext`), deps `[logos_beacon]`. QML calls `logos.module("beacon_ui")` + `logos.watch(backend.M(args), ok, err)`. `keycard` stays on `logos.callModule` (separate legacy Qt module, reachable). See skill `qml-to-universal-module-qtro-backend`.
+- **logos_beacon** is `LogosBeaconImpl : LogosModuleContext` (was Qt BeaconPlugin). Methods return `StdLogosResult` whose `value` is a JSON object/string; the backend serializes it back to a JSON string (`resultToJson`) so the QML keeps parsing with `callModuleParse`. `seqDeriveChannel`/`seqPublish` forward to `modules().zone_sequencer` — the inscription runs C++-side. See skill `universal-core-module-qt-behind-pimpl`.
+- **Node URL trap:** beacon's stored `nodeUrl` was Sneg's tailnet IP `100.108.127.3:8080` — the node is **localhost-only**, so that's unreachable. Must be `http://127.0.0.1:8080` (the SSH tunnel, `-L 8080` NOT 18080). A wrong URL makes the sequencer log `Failed to fetch time info … / timeout waiting for sequencer ready`.
+- **Silent-failure bug (#32, fixed):** the seqPublish handler's legacy ">18s error → assume submitted, defer to finalization" heuristic is WRONG under `logos.watch` (which returns the real result). An error is now surfaced as `publish failed: <reason>`.
+- **Copy-log button (#33, fixed):** was an `Image { source:"icons/Copy.svg" }` — that asset isn't bundled in the `.lgx` → invisible. Now a text "Copy" button. See skill `lgx-bundles-only-view-and-metadata-icon`.
