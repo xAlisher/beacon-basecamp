@@ -1,0 +1,56 @@
+name: "Headless: universal logos_beacon methods + modules().zone_sequencer forwarding"
+output: logos-beacon-universal.md
+project_name: logos-beacon
+release: ""
+intro: |
+  Proves the v0.2 migration of logos_beacon (legacy Qt BeaconPlugin → universal
+  LogosModuleContext, Qt logic preserved behind a pimpl) under `logoscore`, with
+  ZERO hand-written getClient: config/state/inscription-log methods work, and
+  seqDeriveChannel forwards through the generated modules().zone_sequencer wrapper
+  into the Rust FFI. The whole publish path can now run C++-side, not in QML.
+
+sections:
+  - title: "Build the runtime + package manager"
+    step: true
+    steps:
+      - run: "nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos"
+      - run: "nix build 'github:logos-co/logos-package-manager#cli' --out-link ./pm"
+      - run: "mkdir -p modules"
+
+  - title: "Build + install zone_sequencer (dep) + logos_beacon"
+    step: true
+    steps:
+      - title: "zone_sequencer (the dependency logos_beacon consumes via modules())"
+        run: "nix build 'git+file:///home/alisher/basecamp/modules/logos-zone-sequencer-module?ref=feat/modernize-modules-context#lgx' --out-link result-zs-lgx && ./pm/bin/lgpm --modules-dir ./modules install --file result-zs-lgx/*.lgx"
+      - title: "logos_beacon (universal — this repo)"
+        run: "nix build '.#lgx' --out-link result-beacon-lgx && ./pm/bin/lgpm --modules-dir ./modules install --file result-beacon-lgx/*.lgx"
+
+  - title: "Run under logoscore + assert methods and the cross-module forwarding"
+    step: true
+    steps:
+      - run: "./logos/bin/logoscore -D -m ./modules &"
+      - run: "sleep 5"
+      - run: "./logos/bin/logoscore load-module zone_sequencer"
+      - run: "./logos/bin/logoscore load-module logos_beacon"
+      - title: "setSigningKey (config method through the pimpl Qt logic)"
+        run: "./logos/bin/logoscore call logos_beacon setSigningKey aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        expect_contains:
+          - "\"ok\":true"
+      - title: "getStatus reflects the configured key"
+        run: "./logos/bin/logoscore call logos_beacon getStatus"
+        expect_contains:
+          - "\"configured\":true"
+      - title: "pinCid appends a queued entry"
+        run: "./logos/bin/logoscore call logos_beacon pinCid QmTestCid label notes 100 90"
+        expect_contains:
+          - "\"entryIndex\":0"
+      - title: "seqDeriveChannel → modules().zone_sequencer.derive_channel_id (typed, no getClient)"
+        text: |
+          The universal logos_beacon calls the Qt-free universal zone_sequencer via
+          the generated modules().zone_sequencer wrapper. 64x'a' derives to the fixed
+          channel id — a match proves the whole cross-module + Rust-FFI hop runs
+          headlessly from a core module.
+        run: "./logos/bin/logoscore call logos_beacon seqDeriveChannel aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        expect_contains:
+          - "e734ea6c2b6257de72355e472aa05a4c487e6b463c029ed306df2f01b5636b58"
+      - run: "./logos/bin/logoscore stop"

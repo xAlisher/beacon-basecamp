@@ -8,7 +8,7 @@
   "pluginType": "qml",
   "main": "beacon_ui_plugin",
   "view": "Main.qml",
-  "dependencies": ["zone_sequencer"],
+  "dependencies": ["zone_sequencer", "logos_beacon"],
   "codegen": { "rep": "src/beacon_ui.rep" },
   "category": "storage",
   "capabilities": [],

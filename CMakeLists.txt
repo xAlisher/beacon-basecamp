@@ -8,12 +8,16 @@ project(BeaconPlugin LANGUAGES CXX)
 if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
 
+    # v0.2: universal impl (LogosModuleContext) with codegen impl_header (metadata).
+    # QtNetwork is pulled in transitively by RemoteObjects; QtCore is linked by
+    # logos_module() — the pimpl in logos_beacon_impl.cpp uses both.
     logos_module(
         NAME logos_beacon
         SOURCES
-            src/plugin/BeaconPlugin.h
-            src/plugin/BeaconPlugin.cpp
+            src/logos_beacon_impl.h
+            src/logos_beacon_impl.cpp
         INCLUDE_DIRS
+            src/plugin
             src
     )
 

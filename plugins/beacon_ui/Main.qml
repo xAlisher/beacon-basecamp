@@ -71,6 +71,13 @@ Item {
     property bool   keycardConnected:  false
     property bool   authInFlight:      false   // guard against concurrent auth calls
 
+    // ── zone_sequencer bridge (v2) ────────────────────────────────────────────
+    // The modernized zone_sequencer is a Qt-free universal module; legacy
+    // logos.callModule can't reach it (returns "null" — beacon#30). We call it
+    // through beacon_ui's own C++ QtRO backend via logos.module() + logos.watch().
+    readonly property var seq: (typeof logos !== "undefined" && logos.module)
+                               ? logos.module("beacon_ui") : null
+
     // ── Per-module channels cache ─────────────────────────────────────────────
     property var moduleChannels: ({})
 
@@ -172,29 +179,28 @@ Item {
     }
 
     // ── Zone sequencer setup (called once after Keycard auth) ─────────────────
-    function configureZoneSeq() {
-        if (typeof logos === "undefined" || !logos.callModule) return
-        if (root.signingKeyHex === "") return
-
+    // Async: the backend's configure() runs the full set-key/node + derive +
+    // set-channel sequence on zone_sequencer via modules() and returns the
+    // channel id. done(ok) fires when it resolves.
+    function configureZoneSeq(done) {
+        if (!root.seq || root.signingKeyHex === "") { if (done) done(false); return }
         logos.callModule("logos_beacon", "ensureCheckpointsDir", [])
-
-        logos.callModule("liblogos_zone_sequencer_module", "set_signing_key",
-                         [root.signingKeyHex])
-        logos.callModule("liblogos_zone_sequencer_module", "set_node_url",
-                         [root.nodeUrl])
-        logos.callModule("liblogos_zone_sequencer_module", "set_checkpoint_path",
-                         [""])  // empty = bootstrap fresh, no stale-checkpoint backfill
-
-        var chRaw = logos.callModule("liblogos_zone_sequencer_module",
-                                     "get_channel_id", [])
-        var derivedId = seqChannelId(chRaw)
-
-        if (derivedId.length > 0) {
-            logos.callModule("liblogos_zone_sequencer_module",
-                             "set_channel_id", [derivedId])
-            root.channelId    = derivedId
-            root.zoneSeqReady = true
-        }
+        logos.watch(root.seq.configure(root.signingKeyHex, root.nodeUrl),
+            function (ch) {
+                if (typeof ch === "string" && ch.length > 0 &&
+                        !ch.toLowerCase().startsWith("error")) {
+                    root.channelId    = ch
+                    root.zoneSeqReady = true
+                    if (done) done(true)
+                } else {
+                    appendActivity("zone sequencer configure failed: " + ch, "error")
+                    if (done) done(false)
+                }
+            },
+            function (e) {
+                appendActivity("zone sequencer configure error: " + e, "error")
+                if (done) done(false)
+            })
     }
 
     // ── Channel manifest inscription ─────────────────────────────────────────
@@ -753,21 +759,24 @@ Item {
                     return
                 }
                 root.signingKeyHex = r.key
-                root.configureZoneSeq()
-                if (root.zoneSeqReady) {
-                    root.keycardAuthStatus = "complete"
-                    root.keycardConnected  = true
-                    appendActivity("Keycard authenticated", "success")
-                    appendActivity("zone sequencer ready — " + root.channelId.substring(0,16) + "…", "success")
-                    root.currentScreen     = "main"
-                    root.refreshModules()
+                // configureZoneSeq is async now (backend → modules().zone_sequencer);
+                // move the completion into its callback.
+                root.configureZoneSeq(function (ok) {
+                    if (ok) {
+                        root.keycardAuthStatus = "complete"
+                        root.keycardConnected  = true
+                        appendActivity("Keycard authenticated", "success")
+                        appendActivity("zone sequencer ready — " + root.channelId.substring(0,16) + "…", "success")
+                        root.currentScreen     = "main"
+                        root.refreshModules()
 
-                    // Re-populate pendingFinalizations for any in-flight inscriptions
-                    // (handles beacon restart while inscriptions were in submitted/finalizing state)
-                    restoreInFlight("resumed %1 in-flight inscription(s)")
-                } else {
-                    root.keycardAuthStatus = "error"
-                }
+                        // Re-populate pendingFinalizations for any in-flight inscriptions
+                        // (handles beacon restart while inscriptions were in submitted/finalizing state)
+                        restoreInFlight("resumed %1 in-flight inscription(s)")
+                    } else {
+                        root.keycardAuthStatus = "error"
+                    }
+                })
             } else if (r.status === "rejected" || r.status === "failed") {
                 stop()
                 root.authInFlight      = false
