@@ -1646,7 +1646,10 @@ Item {
                                     var total = slotFrom - libAtSubmit
                                     if (total <= 0) return 0.0
                                     var elapsed = root.currentLibSlot - libAtSubmit
-                                    return Math.min(1.0, Math.max(0.0, elapsed / total))
+                                    // Hold below 100% until the explorer scan actually confirms the
+                                    // tx — lib-catchup finishing only means "finalizable", not
+                                    // "finalized". The bar reaching 1.0 is reserved for confirmed.
+                                    return Math.min(0.95, Math.max(0.0, elapsed / total))
                                 }
 
                                 // Remaining slots → ~M:SS estimate
@@ -1671,6 +1674,11 @@ Item {
                                                      || status === "finalizing"
                                 property bool isDone:   status === "confirmed" || status === "ok"
                                 property bool isFailed: status === "failed" || status === "error"
+                                // lib has caught up to the submit slot but the explorer scan hasn't
+                                // returned the tx hash yet → finalization imminent. Show "confirming…"
+                                // instead of a stuck full bar with no link.
+                                property bool confirming: inFlight && slotFrom > 0
+                                                       && root.currentLibSlot >= slotFrom
 
                                 ColumnLayout {
                                     id: entryCol
@@ -1732,12 +1740,14 @@ Item {
                                             }
                                         }
 
-                                        // Time estimate (in-flight, while we have an estimate)
+                                        // Time estimate while lib catches up; then "confirming…"
+                                        // until the explorer scan returns the tx hash (status → confirmed).
                                         Text {
-                                            visible: logEntry.inFlight && logEntry.timeEst.length > 0
-                                            text: logEntry.timeEst
+                                            visible: logEntry.inFlight
+                                                     && (logEntry.timeEst.length > 0 || logEntry.confirming)
+                                            text: logEntry.confirming ? "confirming…" : logEntry.timeEst
                                             font.pixelSize: 10
-                                            color: root.textMuted
+                                            color: logEntry.confirming ? root.accentOrange : root.textMuted
                                         }
 
                                         // Truncated hash (confirmed)
