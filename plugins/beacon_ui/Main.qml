@@ -126,6 +126,15 @@ Item {
     }
     function seqIsError(raw) { return seqResult(raw).length === 0 }
 
+    // The human-readable error from a seq* result ({"error":"..."} or an "error…"
+    // string) so failures are surfaced to the user, not swallowed.
+    function seqError(raw) {
+        var p = callModuleParse(raw)
+        if (p && typeof p === 'object' && p.error) return String(p.error)
+        var s = String(raw === undefined || raw === null ? "" : raw)
+        return s.length ? s : "unknown error"
+    }
+
     // ── Unified feed helpers ──────────────────────────────────────────────────
     function feedEntryRow(cid, label, source, tsStr, inscriptionId, status, slotFrom, libAtSubmit) {
         return { rowType: "entry", cid: cid, label: label, source: source, tsStr: tsStr,
@@ -337,29 +346,16 @@ Item {
                             function (pubRaw) {
                                 var feedRow
                                 if (root.seqIsError(pubRaw)) {
-                                    // The bridge gives up at ~20s but the publish keeps
-                                    // running module-side (first publish pays SDK
-                                    // connect/backfill). An error AFTER the timeout
-                                    // window means "result lost", not "failed" — hand it
-                                    // to the finalization scan (confirms from the chain,
-                                    // needs no inscription_id). Fast errors are real.
-                                    if (Date.now() - pubStarted >= 18000) {
-                                        logos.watch(root.beacon.confirmInscription(entryIndex, "", "submitted"), function () {}, function () {})
-                                        feedRow = feedRowFor(cid)
-                                        if (feedRow >= 0)
-                                            logModel.setProperty(feedRow, "status", "submitted")
-                                        var pfSlow = root.pendingFinalizations.slice()
-                                        pfSlow.push({ entryIndex: entryIndex, channelId: useChannelId,
-                                                      slotFrom: nodeSlot, libAtSubmit: libSlot, cid: cid })
-                                        root.pendingFinalizations = pfSlow
-                                        appendActivity("[" + (source || "primary") + "] publish reply timed out — watching the chain for confirmation", "info")
-                                        finish(true); return
-                                    }
+                                    // logos.watch delivers the ACTUAL backend result (not a
+                                    // client-side timeout), so an error here is a real publish
+                                    // failure — e.g. node unreachable → sequencer "timeout
+                                    // waiting for sequencer ready". Surface the reason instead
+                                    // of silently deferring to finalization.
                                     logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
                                     feedRow = feedRowFor(cid)
                                     if (feedRow >= 0)
                                         logModel.setProperty(feedRow, "status", "failed")
-                                    appendActivity("[" + (source || "primary") + "] inscription error — " + cid.substring(0,16) + "…", "error")
+                                    appendActivity("[" + (source || "primary") + "] publish failed: " + root.seqError(pubRaw), "error")
                                     finish(false); return
                                 }
 
@@ -1421,23 +1417,21 @@ Item {
                             Layout.fillWidth: true
                         }
 
-                        // Copy-all button
-                        Item {
-                            width: 20; height: 20
-
-                            Image {
-                                anchors.centerIn: parent
-                                width: 16; height: 16
-                                source: "icons/Copy.svg"
-                                fillMode: Image.PreserveAspectFit
-                                opacity: copyAllArea.pressed ? 0.6
-                                       : copyAllArea.containsMouse ? 1.0 : 0.4
-                                Behavior on opacity { NumberAnimation { duration: 120 } }
-                            }
+                        // Copy-all log button — visible text label. (icons/Copy.svg
+                        // isn't bundled into the .lgx → the old Image button rendered
+                        // blank/invisible; #33. A text label needs no external asset.)
+                        Text {
+                            id: copyAllBtn
+                            text: "Copy"
+                            font.pixelSize: 11
+                            color: copyAllArea.containsMouse ? root.textSecondary : root.textMuted
+                            Behavior on color { ColorAnimation { duration: 120 } }
+                            Timer { id: copyResetTimer; interval: 1200; onTriggered: copyAllBtn.text = "Copy" }
 
                             MouseArea {
                                 id: copyAllArea
                                 anchors.fill: parent
+                                anchors.margins: -6
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
@@ -1460,6 +1454,8 @@ Item {
                                         lines.push("[" + r.tsStr + "] Inscribed " + r.cid.substring(0, 12) + "… for " + fname + " " + chain)
                                     }
                                     root.copyToClipboard(lines.join("\n"))
+                                    copyAllBtn.text = "Copied"
+                                    copyResetTimer.restart()
                                 }
                             }
                         }
