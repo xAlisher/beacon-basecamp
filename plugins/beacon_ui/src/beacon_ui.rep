@@ -1,0 +1,54 @@
+// QtRO contract for beacon_ui's backend. QML binds via logos.module("beacon_ui")
+// and calls these SLOTs with logos.watch(...). Every SLOT forwards to the
+// universal logos_beacon via modules().logos_beacon.* and returns a JSON string
+// the QML parses (callModuleParse). This is the v0.2 replacement for the legacy
+// logos.callModule("logos_beacon"/"liblogos_zone_sequencer_module", ...) path,
+// which returns "null" for Qt-free universal modules (beacon#30). The seq* SLOTs
+// use logos_beacon's own zone_sequencer bridge (modules().zone_sequencer C++-side).
+class BeaconUi
+{
+    PROP(QString status="Ready" READONLY)
+    PROP(bool zoneSeqReady=false READONLY)
+
+    // ── Config ──────────────────────────────────────────────────────────────
+    SLOT(QString getBeaconConfig())
+    SLOT(QString setNodeUrl(QString url))
+    SLOT(QString setWatchedSources(QString sources))
+    SLOT(QString getWatchedSources())
+    SLOT(QString setChannelLabel(QString label))
+
+    // ── State ───────────────────────────────────────────────────────────────
+    SLOT(QString getStatus())
+    SLOT(QString getInscriptionLog())
+    SLOT(QString clearInscriptionLog())
+
+    // ── Node info ───────────────────────────────────────────────────────────
+    SLOT(QString getNodeInfo())
+
+    // ── Inscription bookkeeping ─────────────────────────────────────────────
+    SLOT(QString pinCid(QString cid, QString label, QString source, int slotFrom, int libAtSubmit))
+    SLOT(QString deriveModuleSigningKey(QString moduleName))
+    SLOT(QString getModules())
+    SLOT(QString ensureCheckpointsDir())
+    SLOT(QString confirmInscription(int entryIndex, QString inscriptionId, QString status))
+
+    // ── Key management ──────────────────────────────────────────────────────
+    SLOT(QString setSigningKey(QString hexKey))
+    SLOT(QString clearSigningKey())
+
+    // ── Manifest log ────────────────────────────────────────────────────────
+    SLOT(QString getManifestLog())
+    SLOT(QString recordManifest(QString moduleName))
+
+    // ── Finalization / explorer lookups ─────────────────────────────────────
+    SLOT(QString findExplorerTxHash(QString channelId, int slotFrom, int slotTo))
+
+    // ── zone_sequencer bridge (forwarded through logos_beacon) ──────────────
+    // Stateless channel derivation and publish — logos_beacon owns the
+    // modules().zone_sequencer hop, so the whole publish path runs C++-side.
+    SLOT(QString seqDeriveChannel(QString signingKeyHex))
+    SLOT(QString seqPublish(QString nodeUrl, QString channelId, QString signingKeyHex, QString checkpointPath, QString payload))
+
+    // Health probe.
+    SLOT(QString ping())
+}

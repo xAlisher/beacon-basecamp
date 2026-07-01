@@ -199,3 +199,18 @@ repeated double-instance: kill sequence not terminating all AppImage children be
 
 ## win 2026-06-10
 testnet explorer lag root cause found: ~54h behind chain. Fixed findExplorerTxHash to fall back to blockHeaderId when explorer returns 404. Cypherpunk Manifesto confirmed. Links will show proper tx hash once explorer catches up (~June 12).
+
+## Week of 2026-07-01 — EPIC: v0.2 universal migration (beacon_ui + logos_beacon), #30-33
+
+### Wins
+- [process] Trivial-experiment-first de-risked two unknowns cheaply BEFORE big commits: proved the *never-tested* shop ui_qml→modules() pattern via a 7-file probe (build + onContextReady self-test → e734ea6c) before rewiring beacon; proved a universal *core* module can link Qt via a one-line fixture injection before converting logos_beacon. Avoided rewiring onto an unproven pattern / a needless networking rewrite.
+- [process] Art of War "win first, then seek battle": migrated + headless-doctested logos_beacon (core = verifiable) BEFORE beacon_ui (ui_qml = GUI-only). The doctest (seqDeriveChannel → e734ea6c) was green before touching the un-observable part.
+- [process] Builder-auditor via subagent: delegated the mechanical 21-method backend + ~40-site async QML rewire to a subagent, then audited + nix-built — the build caught the real bug (Qt-context modules() wrapper takes QString, subagent used .toStdString()). Bulk parallelized, correctness kept.
+- [project] logos_beacon Qt→universal kept QNetworkAccessManager/QJson verbatim behind a pimpl → an interface refactor, not a networking rewrite.
+
+### Fails
+- [process] Claimed "works end-to-end" + marked #30/#31 verified BEFORE an actual inscription. User corrected: "it loaded + keycard worked, not the inscription." Root cause: conflated a big intermediate milestone (keycard/configure proving the modules() chain live) with the terminal goal. Fix: don't claim end-to-end until the terminal artifact (inscription_id) is observed; had to re-comment the issues.
+- [process] Repeatedly framed the work as needing to be "quick" and offered to checkpoint/restore, after the user explicitly said "best canonical standards, not quick." Root cause: anchored on session-length anxiety over the user's stated bar. Fix: honor the stated quality bar; stop offering to stop.
+- [process] Self-killing pkill: `pkill -9 -f "logos-basecamp.*AppImage"` matched my OWN command line (the pattern was a literal in the command) → SIGTERM'd the shell mid-script → half-done kills, exit 1, no output; misread as a flaky harness for several turns. Fix: bracket trick `pkill -f '[.]LogosBasecamp[.]elf'` (pattern won't match itself), or kill by PID.
+- [process] Misdiagnosed a "restart" 3×: the `pgrep 'logos-basecamp.*AppImage'` pid is a transient *launcher* wrapper; the real long-running process is `.LogosBasecamp.elf`. I "restarted" repeatedly without ever killing the real .elf (ran since 06:29 the whole time). Fix: track/kill the `.elf`, not the AppImage launcher pid.
+- [project] First beacon_ui backend attempt dropped logos_beacon from deps → it never loaded → keycard flow broke + multi-minute `callModule("logos_beacon")` blocks (misread as "concurrent testing?"). Root cause: on-demand load requires the dep be listed in a loaded ui_qml's deps, AND every codegen dep needs a typed contract (non-universal logos_beacon couldn't be one). The real fix was to make the whole chain universal.
