@@ -53,4 +53,14 @@ sections:
         run: "./logos/bin/logoscore call logos_beacon seqDeriveChannel aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         expect_contains:
           - "e734ea6c2b6257de72355e472aa05a4c487e6b463c029ed306df2f01b5636b58"
+      - title: "getChannelState reads a channel's live safe-state via /channel/{id} (v0.2, beacon#43)"
+        text: |
+          The v0.2 confirmation path. GET /channel/{id} returns tip_slot/tip_message once an
+          op is safe (in an L1 block) — replacing the /cryptarchia/blocks scan, which returns
+          [] on v0.2. Here f8aab825… is a finalized channel on the live node, so getChannelState
+          reports found + its tip_slot (187085). Requires the node reachable at 127.0.0.1:8080.
+        run: "./logos/bin/logoscore call logos_beacon getChannelState f8aab825a8c8bed0f7a5d641c0efddea45c5f3a5be6bcaf1a9610c52130f7cc3"
+        expect_contains:
+          - "\"found\":true"
+          - "187085"
       - run: "./logos/bin/logoscore stop"
