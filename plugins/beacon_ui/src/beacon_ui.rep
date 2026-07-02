@@ -42,6 +42,7 @@ class BeaconUi
 
     // ── Finalization / explorer lookups ─────────────────────────────────────
     SLOT(QString findExplorerTxHash(QString channelId, int slotFrom, int slotTo))
+    SLOT(QString getChannelState(QString channelId))
 
     // ── zone_sequencer bridge (forwarded through logos_beacon) ──────────────
     // Stateless channel derivation and publish — logos_beacon owns the

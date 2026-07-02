@@ -282,6 +282,30 @@ struct LogosBeaconImpl::Impl
         return QJsonDocument(result).toJson(QJsonDocument::Compact);
     }
 
+    // v0.2 confirmation path (beacon#43). GET /channel/{id} returns 500 ("no state")
+    // until an op lands, then 200 with tip_slot/tip_message — the "safe" state (in an
+    // L1 block). Callers finalize when tip_slot <= lib_slot. Replaces the
+    // /cryptarchia/blocks scan, which returns [] on v0.2 even for slots holding our op.
+    QString getChannelState(const QString& channelId)
+    {
+        QJsonObject result;
+        result[QStringLiteral("found")]      = false;
+        result[QStringLiteral("tipSlot")]    = -1;
+        result[QStringLiteral("tipMessage")] = QString();
+        if (channelId.isEmpty()) return QJsonDocument(result).toJson(QJsonDocument::Compact);
+        QNetworkReply* reply = getSync(QString("%1/channel/%2").arg(nodeUrl(), channelId));
+        const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        if (http != 200) return QJsonDocument(result).toJson(QJsonDocument::Compact);  // 500 = nothing landed yet
+        const QJsonObject o = QJsonDocument::fromJson(body).object();
+        if (!o.contains(QStringLiteral("tip_slot"))) return QJsonDocument(result).toJson(QJsonDocument::Compact);
+        result[QStringLiteral("found")]      = true;
+        result[QStringLiteral("tipSlot")]    = o.value(QStringLiteral("tip_slot")).toInt();
+        result[QStringLiteral("tipMessage")] = o.value(QStringLiteral("tip_message")).toString();
+        return QJsonDocument(result).toJson(QJsonDocument::Compact);
+    }
+
     QString findExplorerTxHash(const QString& channelId, int slotFrom, int slotTo)
     {
         QJsonObject result; result[QStringLiteral("txHash")] = QString(); result[QStringLiteral("blockHash")] = QString(); result[QStringLiteral("found")] = false;
@@ -413,6 +437,8 @@ StdLogosResult LogosBeaconImpl::recordManifest(const std::string& m) { return ad
 // ── Finalization / explorer lookups ──────────────────────────────────────────────
 StdLogosResult LogosBeaconImpl::findAnchorTx(const std::string& nodeUrl, const std::string& channelId, int64_t slotFrom, int64_t slotTo)
 { return adapt(d->findAnchorTx(qs(nodeUrl), qs(channelId), int(slotFrom), int(slotTo))); }
+StdLogosResult LogosBeaconImpl::getChannelState(const std::string& channelId)
+{ return adapt(d->getChannelState(qs(channelId))); }
 StdLogosResult LogosBeaconImpl::findExplorerTxHash(const std::string& channelId, int64_t slotFrom, int64_t slotTo)
 { return adapt(d->findExplorerTxHash(qs(channelId), int(slotFrom), int(slotTo))); }
 StdLogosResult LogosBeaconImpl::getBlockForTx(const std::string& txHash, int64_t slotFrom)

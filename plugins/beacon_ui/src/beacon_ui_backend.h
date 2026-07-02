@@ -51,6 +51,7 @@ public:
 
     // ── Finalization / explorer lookups ───────────────────────────────────────
     QString findExplorerTxHash(QString channelId, int slotFrom, int slotTo) override;
+    QString getChannelState(QString channelId) override;
 
     // ── zone_sequencer bridge (forwarded through logos_beacon) ────────────────
     QString seqDeriveChannel(QString signingKeyHex) override;

@@ -65,6 +65,8 @@ public:
     StdLogosResult findExplorerTxHash(const std::string& channelId,
                                       int64_t slotFrom, int64_t slotTo);
     StdLogosResult getBlockForTx(const std::string& txHash, int64_t slotFrom);
+    // v0.2 confirmation via /channel/{id} → {found, tipSlot, tipMessage} (beacon#43)
+    StdLogosResult getChannelState(const std::string& channelId);
 
     // ── Debug ──────────────────────────────────────────────────────────────────
     StdLogosResult diagLog(const std::string& msg);

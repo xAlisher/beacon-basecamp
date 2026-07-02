@@ -701,7 +701,7 @@ Item {
         }
     }
 
-    // ── Finalization poll — scans blocks for real explorer TX hash ────────────
+    // ── Finalization poll — confirms via /channel/{id} tip_slot vs LIB (#43) ──
     Timer {
         id: finalizationTimer
         interval: 6000
@@ -720,7 +720,7 @@ Item {
 
                 var pf = root.pendingFinalizations
                 var remaining = []
-                var lookups   = []   // items past slotFrom → need async findExplorerTxHash
+                var lookups   = []   // items past slotFrom → check /channel state
 
                 for (var i = 0; i < pf.length; i++) {
                     var item = pf[i]
@@ -760,29 +760,31 @@ Item {
 
                 for (var k = 0; k < lookups.length; k++) {
                     (function (item) {
-                        var fRow   = root.feedRowFor(item.cid || "")
-                        var slotTo = libNow
-                        logos.watch(root.beacon.findExplorerTxHash(item.channelId, item.slotFrom, slotTo),
+                        var fRow = root.feedRowFor(item.cid || "")
+                        // v0.2 (beacon#43): confirm via /channel/{id}. The old
+                        // /cryptarchia/blocks scan returns [] on v0.2. tip_slot <= libNow
+                        // means the channel (incl. our inscription) is finalized.
+                        logos.watch(root.beacon.getChannelState(item.channelId),
                             function (fRaw) {
-                                var fResult = root.callModuleParse(fRaw)
-                                if (fResult && fResult.found === true
-                                        && fResult.txHash && fResult.txHash.length > 0) {
-                                    // Confirmed — store real explorer hash
-                                    logos.watch(root.beacon.confirmInscription(item.entryIndex, fResult.txHash, "confirmed"), function () {}, function () {})
+                                var cs = root.callModuleParse(fRaw)
+                                if (cs && cs.found === true && cs.tipSlot >= 0 && cs.tipSlot <= libNow) {
+                                    // Finalized (safe + slot <= LIB) — record the message id
+                                    var msgId = cs.tipMessage || ""
+                                    logos.watch(root.beacon.confirmInscription(item.entryIndex, msgId, "confirmed"), function () {}, function () {})
                                     if (fRow >= 0) {
-                                        logModel.setProperty(fRow, "inscriptionId", fResult.txHash)
+                                        if (msgId.length > 0) logModel.setProperty(fRow, "inscriptionId", msgId)
                                         logModel.setProperty(fRow, "status", "confirmed")
                                     }
                                     root.inscribedCount++
-                                    appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  " + fResult.txHash.substring(0, 16) + "…", "success")
-                                } else if (slotTo > item.slotFrom + 14400) {
-                                    // Timed out — ~4 hours of trying without success
+                                    appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  slot " + cs.tipSlot, "success")
+                                } else if (libNow > item.slotFrom + 14400) {
+                                    // Timed out — ~4 hours without finalizing
                                     logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "failed"), function () {}, function () {})
                                     if (fRow >= 0)
                                         logModel.setProperty(fRow, "status", "failed")
                                     appendActivity("failed (timeout): " + item.cid.substring(0, 16) + "…", "error")
                                 } else {
-                                    // Still scanning — mark finalizing if not already
+                                    // safe-but-not-finalized, or not landed yet — keep finalizing
                                     if (fRow >= 0) {
                                         var st2 = logModel.get(fRow).status
                                         if (st2 !== "finalizing") {

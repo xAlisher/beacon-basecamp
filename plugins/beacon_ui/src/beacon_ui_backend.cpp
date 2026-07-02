@@ -154,6 +154,12 @@ QString BeaconUiBackend::findExplorerTxHash(QString channelId, int slotFrom, int
         channelId, slotFrom, slotTo));
 }
 
+QString BeaconUiBackend::getChannelState(QString channelId)
+{
+    if (!isContextReady()) return "{\"error\":\"context not ready\"}";
+    return resultToJson(modules().logos_beacon.getChannelState(channelId));
+}
+
 // ── zone_sequencer bridge (forwarded through logos_beacon) ────────────────────────
 QString BeaconUiBackend::seqDeriveChannel(QString signingKeyHex)
 {
