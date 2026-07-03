@@ -1,24 +1,29 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
+import Logos.Theme
+import Logos.Controls
 
 Item {
     id: root
 
-    // ── Palette (Stash-aligned) ────────────────────────────────────────────────
-    readonly property color bgPrimary:     "#171717"
-    readonly property color bgSecondary:   "#262626"
-    readonly property color bgActive:      "#332A27"
-    readonly property color textPrimary:   "#FFFFFF"
-    readonly property color textSecondary: "#A4A4A4"
-    readonly property color textMuted:     "#5D5D5D"
-    readonly property color accentOrange:  "#FF5000"
-    readonly property color accentHover:   "#FF6B1A"
-    readonly property color accentPressed: "#CC4000"
-    readonly property color successGreen:  "#22C55E"
-    readonly property color errorRed:      "#FB3748"
-    readonly property color warningYellow: "#FFC107"
-    readonly property color borderColor:   "#383838"
+    // ── Palette → Logos design-system tokens (Theme.palette.*) ─────────────────
+    readonly property color bgPrimary:     Theme.palette.background
+    readonly property color bgSecondary:   Theme.palette.backgroundSecondary
+    readonly property color bgActive:      Theme.palette.backgroundElevated
+    readonly property color textPrimary:   Theme.palette.text
+    readonly property color textSecondary: Theme.palette.textSecondary
+    readonly property color textMuted:     Theme.palette.textMuted
+    readonly property color accentOrange:  Theme.palette.primary
+    readonly property color accentHover:   Theme.palette.primaryHover
+    readonly property color accentPressed: Theme.palette.primaryPressed
+    readonly property color successGreen:  Theme.palette.success
+    readonly property color errorRed:      Theme.palette.error
+    readonly property color warningYellow: Theme.palette.warning
+    readonly property color borderColor:   Theme.palette.borderHairline
+
+    // Mono font for hashes / channel ids / inscription ids
+    readonly property string monoFont: "monospace"
 
     // ── State ─────────────────────────────────────────────────────────────────
     property string channelId:         ""
@@ -925,84 +930,68 @@ Item {
     // ── Landing screen ────────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
-        color: root.bgPrimary
+        color: Theme.palette.background
         visible: root.currentScreen === "landing"
 
         ColumnLayout {
             anchors.centerIn: parent
             width: 320
-            spacing: 16
+            spacing: Theme.spacing.large
 
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: 4
+                spacing: Theme.spacing.tiny
 
-                Text {
+                LogosText {
                     text: "Beacon"
-                    font.pixelSize: 20
-                    font.bold: true
-                    color: root.textPrimary
+                    font.pixelSize: Theme.typography.panelTitleText
+                    font.weight: Theme.typography.weightBold
+                    color: Theme.palette.text
                     Layout.alignment: Qt.AlignHCenter
                 }
 
-                Text {
+                LogosText {
                     text: "Permanent on-chain index. Inscribes uploaded CIDs into module-dedicated channels, each derived from your Keycard."
-                    font.pixelSize: 11
-                    color: root.textSecondary
+                    font.pixelSize: Theme.typography.secondaryText
+                    color: Theme.palette.textSecondary
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                 }
             }
 
-            Text {
+            LogosText {
                 Layout.fillWidth: true
                 text: root.keycardAuthStatus === "pending"
                       ? "Switch to Keycard module to approve..." : ""
-                color: root.warningYellow
-                font.pixelSize: 13
+                color: Theme.palette.warning
+                font.pixelSize: Theme.typography.primaryText
                 horizontalAlignment: Text.AlignHCenter
                 visible: text.length > 0
             }
 
-            Text {
+            LogosText {
                 Layout.fillWidth: true
                 text: root.keycardAuthStatus === "rejected" ? "Authorization rejected. Try again." :
                       root.keycardAuthStatus === "error"    ? "Keycard not available. Try again." : ""
-                color: root.errorRed
-                font.pixelSize: 13
+                color: Theme.palette.error
+                font.pixelSize: Theme.typography.primaryText
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
                 visible: text.length > 0
             }
 
-            Rectangle {
+            LogosButton {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 44
-                radius: 22
-                color: (root.authInFlight || root.keycardAuthStatus === "pending")
-                       ? root.warningYellow
-                       : (connectArea.containsMouse ? root.accentHover : root.accentOrange)
-
-                Text {
-                    anchors.centerIn: parent
-                    text: (root.authInFlight || root.keycardAuthStatus === "pending")
-                          ? "Requesting…" : "Connect with Keycard"
-                    color: root.textPrimary
-                    font.pixelSize: 14
-                    font.weight: Font.Medium
-                }
-
-                MouseArea {
-                    id: connectArea
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    enabled: !root.authInFlight && root.keycardAuthStatus !== "pending"
-                    onClicked: {
-                        root.authInFlight = true
-                        Qt.callLater(root.requestKeycardAuth)
-                    }
+                implicitHeight: 44
+                radius: Theme.spacing.radiusPill
+                text: (root.authInFlight || root.keycardAuthStatus === "pending")
+                      ? "Requesting…" : "Connect with Keycard"
+                enabled: !root.authInFlight && root.keycardAuthStatus !== "pending"
+                onClicked: {
+                    root.authInFlight = true
+                    Qt.callLater(root.requestKeycardAuth)
                 }
             }
         }
@@ -1011,34 +1000,34 @@ Item {
     // ── Main UI ───────────────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
-        color: root.bgPrimary
+        color: Theme.palette.background
         visible: root.currentScreen === "main"
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 16
-            spacing: 12
+            anchors.margins: Theme.spacing.large
+            spacing: Theme.spacing.medium
 
             // ── Header ────────────────────────────────────────────────────────
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: Theme.spacing.small
 
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 2
+                    spacing: Theme.spacing.tiny
 
-                    Text {
+                    LogosText {
                         text: "Beacon"
-                        font.pixelSize: 20
-                        font.bold: true
-                        color: root.textPrimary
+                        font.pixelSize: Theme.typography.panelTitleText
+                        font.weight: Theme.typography.weightBold
+                        color: Theme.palette.text
                     }
 
-                    Text {
+                    LogosText {
                         text: "Permanent on-chain index. Inscribes uploaded CIDs into module-dedicated channels, each derived from your Keycard."
-                        font.pixelSize: 11
-                        color: root.textSecondary
+                        font.pixelSize: Theme.typography.secondaryText
+                        color: Theme.palette.textSecondary
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
                     }
@@ -1048,52 +1037,37 @@ Item {
                 Rectangle {
                     height: 28
                     implicitWidth: statusPillRow.implicitWidth + 20
-                    radius: 14
-                    color: Qt.rgba(0.149, 0.149, 0.149, 0.85)
-                    border.color: root.borderColor
+                    radius: Theme.spacing.radiusPill
+                    color: Theme.palette.backgroundSecondary
+                    border.color: Theme.palette.borderHairline
                     border.width: 1
 
                     RowLayout {
                         id: statusPillRow
                         anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
-                        spacing: 6
+                        spacing: Theme.spacing.small
 
                         Rectangle {
-                            width: 7; height: 7; radius: 4
+                            width: 7; height: 7; radius: Theme.spacing.radiusPill
                             Layout.alignment: Qt.AlignVCenter
-                            color: root.zoneSeqReady ? root.successGreen : root.errorRed
+                            color: root.zoneSeqReady ? Theme.palette.success : Theme.palette.error
                         }
 
-                        Text {
+                        LogosText {
                             text: root.inscribedCount + " inscribed"
-                            font.pixelSize: 11
-                            color: root.textPrimary
+                            font.pixelSize: Theme.typography.secondaryText
+                            color: Theme.palette.text
                         }
                     }
                 }
 
                 // Gear button — settings toggle
-                Rectangle {
-                    width: 28; height: 28
-                    radius: 6
-                    color: gearArea.containsMouse ? root.bgSecondary : "transparent"
-                    border.color: root.settingsPanelOpen ? root.accentOrange : root.borderColor
-                    border.width: 1
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "⚙"
-                        font.pixelSize: 14
-                        color: root.settingsPanelOpen ? root.accentOrange : root.textSecondary
-                    }
-
-                    MouseArea {
-                        id: gearArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.settingsPanelOpen = !root.settingsPanelOpen
-                    }
+                LogosButton {
+                    implicitWidth: 28; implicitHeight: 28
+                    Layout.preferredWidth: 28; Layout.preferredHeight: 28
+                    radius: Theme.spacing.radiusMedium
+                    text: "⚙"
+                    onClicked: root.settingsPanelOpen = !root.settingsPanelOpen
                 }
             }
 
@@ -1102,59 +1076,52 @@ Item {
                 Layout.fillWidth: true
                 visible: root.settingsPanelOpen
                 height: settingsCol.implicitHeight + 20
-                color: root.bgSecondary
-                radius: 6
-                border.color: root.borderColor
+                color: Theme.palette.backgroundSecondary
+                radius: Theme.spacing.radiusMedium
+                border.color: Theme.palette.borderHairline
                 border.width: 1
 
                 ColumnLayout {
                     id: settingsCol
                     anchors { top: parent.top; left: parent.left; right: parent.right; margins: 10 }
-                    spacing: 12
+                    spacing: Theme.spacing.medium
 
                     // Channel ID row
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 4
+                        spacing: Theme.spacing.tiny
 
-                        Text { text: "Channel ID"; color: root.textSecondary; font.pixelSize: 11 }
+                        LogosText { text: "Channel ID"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 8
+                            spacing: Theme.spacing.small
 
                             Rectangle {
                                 Layout.fillWidth: true
-                                height: 32; color: root.bgPrimary; radius: 4
-                                border.color: root.borderColor; border.width: 1
+                                height: 32; color: Theme.palette.background; radius: Theme.spacing.radiusSmall
+                                border.color: Theme.palette.borderHairline; border.width: 1
 
-                                Text {
+                                LogosText {
                                     anchors.verticalCenter: parent.verticalCenter
                                     anchors.left: parent.left; anchors.leftMargin: 8
                                     anchors.right: parent.right; anchors.rightMargin: 8
                                     text: root.channelId.length > 0
                                            ? root.channelId.substring(0, 16) + "..."
                                            : "(not yet derived)"
-                                    color: root.channelId.length > 0 ? root.textPrimary : root.textMuted
-                                    font.pixelSize: 12; font.family: "monospace"
+                                    color: root.channelId.length > 0 ? Theme.palette.text : Theme.palette.textMuted
+                                    font.pixelSize: Theme.typography.secondaryText; font.family: root.monoFont
                                     elide: Text.ElideRight
                                 }
                             }
 
-                            Rectangle {
-                                width: 56; height: 32; radius: 4
+                            LogosButton {
+                                implicitWidth: 56; implicitHeight: 32
+                                Layout.preferredWidth: 56; Layout.preferredHeight: 32
+                                radius: Theme.spacing.radiusSmall
                                 visible: root.channelId.length > 0
-                                color: chCopyArea.pressed      ? root.accentPressed
-                                     : chCopyArea.containsMouse ? root.accentHover : root.accentOrange
-                                Behavior on color { ColorAnimation { duration: 100 } }
-
-                                Text { anchors.centerIn: parent; text: "Copy"; color: "#FFFFFF"; font.pixelSize: 12; font.bold: true }
-
-                                MouseArea {
-                                    id: chCopyArea
-                                    anchors.fill: parent; hoverEnabled: true
-                                    onClicked: root.copyToClipboard(root.channelId)
-                                }
+                                text: "Copy"
+                                onClicked: root.copyToClipboard(root.channelId)
                             }
                         }
                     }
@@ -1162,20 +1129,20 @@ Item {
                     // Watched Sources row
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 4
+                        spacing: Theme.spacing.tiny
 
-                        Text { text: "Watched Sources"; color: root.textSecondary; font.pixelSize: 11 }
+                        LogosText { text: "Watched Sources"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 8
+                            spacing: Theme.spacing.small
 
                             Rectangle {
                                 Layout.fillWidth: true
                                 height: 72
-                                color: root.bgPrimary
-                                radius: 4
-                                border.color: root.borderColor
+                                color: Theme.palette.background
+                                radius: Theme.spacing.radiusSmall
+                                border.color: Theme.palette.borderHairline
                                 border.width: 1
                                 clip: true
 
@@ -1183,39 +1150,30 @@ Item {
                                     anchors.fill: parent
                                     anchors.margins: 6
 
-                                    TextArea {
+                                    LogosTextArea {
                                         id: sourcesInput
-                                        color: root.textPrimary
-                                        font.pixelSize: 12
-                                        font.family: "monospace"
+                                        color: Theme.palette.text
+                                        font.pixelSize: Theme.typography.secondaryText
+                                        font.family: root.monoFont
                                         wrapMode: TextArea.NoWrap
                                         placeholderText: "keeper"
-                                        placeholderTextColor: root.textMuted
+                                        placeholderTextColor: Theme.palette.textMuted
                                         background: null
                                         text: root.watchedSources.join("\n")
                                     }
                                 }
                             }
 
-                            Rectangle {
-                                width: 56; height: 32; radius: 4
+                            LogosButton {
+                                implicitWidth: 56; implicitHeight: 32
+                                Layout.preferredWidth: 56; Layout.preferredHeight: 32
                                 Layout.alignment: Qt.AlignTop
-                                color: srcSaveArea.pressed      ? root.accentPressed
-                                     : srcSaveArea.containsMouse ? root.accentHover : root.accentOrange
-                                Behavior on color { ColorAnimation { duration: 100 } }
-
-                                Text { anchors.centerIn: parent; text: "Save"; color: "#FFFFFF"; font.pixelSize: 12; font.bold: true }
-
-                                MouseArea {
-                                    id: srcSaveArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        if (!root.beacon) return
-                                        logos.watch(root.beacon.setWatchedSources(sourcesInput.text), function () {}, function () {})
-                                        root.watchedSources = sourcesInput.text.split("\n").filter(function(s){ return s.trim().length > 0 })
-                                    }
+                                radius: Theme.spacing.radiusSmall
+                                text: "Save"
+                                onClicked: {
+                                    if (!root.beacon) return
+                                    logos.watch(root.beacon.setWatchedSources(sourcesInput.text), function () {}, function () {})
+                                    root.watchedSources = sourcesInput.text.split("\n").filter(function(s){ return s.trim().length > 0 })
                                 }
                             }
                         }
@@ -1224,49 +1182,33 @@ Item {
                     // Node URL row
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 4
+                        spacing: Theme.spacing.tiny
 
-                        Text { text: "Node URL"; color: root.textSecondary; font.pixelSize: 11 }
+                        LogosText { text: "Node URL"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 8
+                            spacing: Theme.spacing.small
 
-                            Rectangle {
+                            LogosTextField {
+                                id: nodeUrlInput
                                 Layout.fillWidth: true
-                                height: 32; color: root.bgPrimary; radius: 4
-                                border.color: nodeUrlInput.activeFocus ? root.accentOrange : root.borderColor
-                                border.width: 1
-                                Behavior on border.color { ColorAnimation { duration: 100 } }
-
-                                TextField {
-                                    id: nodeUrlInput
-                                    anchors.fill: parent; anchors.margins: 1
-                                    color: root.textPrimary; font.pixelSize: 12; font.family: "monospace"
-                                    background: null; leftPadding: 8
-                                    placeholderText: "http://127.0.0.1:8080"
-                                    placeholderTextColor: root.textMuted
-                                    text: root.nodeUrl
-                                }
+                                implicitHeight: 32
+                                placeholderText: "http://127.0.0.1:8080"
+                                placeholderTextColor: Theme.palette.textMuted
+                                text: root.nodeUrl
                             }
 
-                            Rectangle {
-                                width: 56; height: 32; radius: 4
-                                color: saveArea.pressed      ? root.accentPressed
-                                     : saveArea.containsMouse ? root.accentHover : root.accentOrange
-                                Behavior on color { ColorAnimation { duration: 100 } }
-
-                                Text { anchors.centerIn: parent; text: "Save"; color: "#FFFFFF"; font.pixelSize: 12; font.bold: true }
-
-                                MouseArea {
-                                    id: saveArea
-                                    anchors.fill: parent; hoverEnabled: true
-                                    onClicked: {
-                                        if (!root.beacon) return
-                                        logos.watch(root.beacon.setNodeUrl(nodeUrlInput.text), function () {}, function () {})
-                                        root.nodeUrl = nodeUrlInput.text
-                                        configureZoneSeq()
-                                    }
+                            LogosButton {
+                                implicitWidth: 56; implicitHeight: 32
+                                Layout.preferredWidth: 56; Layout.preferredHeight: 32
+                                radius: Theme.spacing.radiusSmall
+                                text: "Save"
+                                onClicked: {
+                                    if (!root.beacon) return
+                                    logos.watch(root.beacon.setNodeUrl(nodeUrlInput.text), function () {}, function () {})
+                                    root.nodeUrl = nodeUrlInput.text
+                                    configureZoneSeq()
                                 }
                             }
                         }
@@ -1279,19 +1221,20 @@ Item {
                 visible: root.keycardAuthStatus !== "complete"
                 Layout.fillWidth: true
                 height: 30
-                radius: 4
+                radius: Theme.spacing.radiusSmall
                 color: root.keycardAuthStatus === "rejected" || root.keycardAuthStatus === "error"
-                       ? "#2A1515" : "#1A1A2A"
+                       ? Theme.colors.getColor(Theme.palette.error, 0.15)
+                       : Theme.colors.getColor(Theme.palette.info, 0.12)
 
-                Text {
+                LogosText {
                     anchors.centerIn: parent
                     text: root.keycardAuthStatus === ""         ? "Requesting Keycard auth..." :
                           root.keycardAuthStatus === "pending"  ? "Waiting for Keycard approval — open Keycard tab" :
                           root.keycardAuthStatus === "rejected" ? "Keycard auth rejected — reload to retry" :
                           root.keycardAuthStatus === "error"    ? "Keycard not available — key not loaded" : ""
                     color: root.keycardAuthStatus === "rejected" || root.keycardAuthStatus === "error"
-                           ? root.errorRed : root.textSecondary
-                    font.pixelSize: 11
+                           ? Theme.palette.error : Theme.palette.textSecondary
+                    font.pixelSize: Theme.typography.secondaryText
                 }
             }
 
@@ -1299,14 +1242,14 @@ Item {
                 visible: root.keycardConnected && !root.zoneSeqReady
                 Layout.fillWidth: true
                 height: 30
-                radius: 4
-                color: "#2A1515"
+                radius: Theme.spacing.radiusSmall
+                color: Theme.colors.getColor(Theme.palette.error, 0.15)
 
-                Text {
+                LogosText {
                     anchors.centerIn: parent
                     text: "Zone sequencer unavailable — logos_beacon could not derive a channel"
-                    color: root.errorRed
-                    font.pixelSize: 11
+                    color: Theme.palette.error
+                    font.pixelSize: Theme.typography.secondaryText
                 }
             }
 
@@ -1329,17 +1272,17 @@ Item {
                             Layout.fillWidth: true
                             spacing: 1
 
-                            Text {
+                            LogosText {
                                 text: "Channels"
-                                font.pixelSize: 13
-                                font.bold: true
-                                color: root.textPrimary
+                                font.pixelSize: Theme.typography.primaryText
+                                font.weight: Theme.typography.weightBold
+                                color: Theme.palette.text
                             }
 
-                            Text {
+                            LogosText {
                                 text: "auto-detected"
-                                font.pixelSize: 9
-                                color: root.textMuted
+                                font.pixelSize: Theme.typography.badgeText
+                                color: Theme.palette.textMuted
                             }
                         }
                     }
@@ -1347,18 +1290,18 @@ Item {
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        color: root.bgSecondary
-                        radius: 6
-                        border.color: root.borderColor
+                        color: Theme.palette.backgroundSecondary
+                        radius: Theme.spacing.radiusMedium
+                        border.color: Theme.palette.borderHairline
                         border.width: 1
                         clip: true
 
-                        Text {
+                        LogosText {
                             anchors.centerIn: parent
                             visible: modulesModel.count === 0
                             text: "No channels yet"
-                            color: root.textMuted
-                            font.pixelSize: 11
+                            color: Theme.palette.textMuted
+                            font.pixelSize: Theme.typography.secondaryText
                         }
 
                         ListView {
@@ -1366,13 +1309,13 @@ Item {
                             anchors { fill: parent; margins: 8 }
                             model: modulesModel
                             clip: true
-                            spacing: 2
+                            spacing: Theme.spacing.tiny
 
                             delegate: Rectangle {
                                 width: channelsListView.width
                                 height: modCol.implicitHeight + 10
-                                color: modRowArea.containsMouse ? Qt.rgba(0.22, 0.22, 0.22, 1) : "transparent"
-                                radius: 3
+                                color: modRowArea.containsMouse ? Theme.palette.backgroundElevated : "transparent"
+                                radius: Theme.spacing.radiusSmall
                                 Behavior on color { ColorAnimation { duration: 80 } }
 
                                 ColumnLayout {
@@ -1382,33 +1325,33 @@ Item {
                                     anchors.leftMargin: 6; anchors.rightMargin: 6
                                     spacing: 2
 
-                                    Text {
+                                    LogosText {
                                         text: model.name || "(primary)"
-                                        color: root.textPrimary
-                                        font.pixelSize: 11
-                                        font.bold: true
+                                        color: Theme.palette.text
+                                        font.pixelSize: Theme.typography.secondaryText
+                                        font.weight: Theme.typography.weightBold
                                         elide: Text.ElideRight
                                         Layout.fillWidth: true
                                     }
 
-                                    Text {
+                                    LogosText {
                                         text: {
                                             var mc = root.moduleChannels[model.name]
                                             if (mc && mc.channelId && mc.channelId.length > 0)
                                                 return mc.channelId.substring(0, 12) + "..."
                                             return model.name ? "deriving..." : ""
                                         }
-                                        color: root.textMuted
-                                        font.pixelSize: 9
-                                        font.family: "monospace"
+                                        color: Theme.palette.textMuted
+                                        font.pixelSize: Theme.typography.badgeText
+                                        font.family: root.monoFont
                                         elide: Text.ElideRight
                                         Layout.fillWidth: true
                                     }
 
-                                    Text {
+                                    LogosText {
                                         text: model.cidCount + " CIDs"
-                                        color: root.textSecondary
-                                        font.pixelSize: 9
+                                        color: Theme.palette.textSecondary
+                                        font.pixelSize: Theme.typography.badgeText
                                     }
                                 }
 
@@ -1433,24 +1376,24 @@ Item {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 4
+                        spacing: Theme.spacing.tiny
 
-                        Text {
+                        LogosText {
                             text: "Log & Activity"
-                            font.pixelSize: 13
-                            font.bold: true
-                            color: root.textPrimary
+                            font.pixelSize: Theme.typography.primaryText
+                            font.weight: Theme.typography.weightBold
+                            color: Theme.palette.text
                             Layout.fillWidth: true
                         }
 
                         // Copy-all log button — visible text label. (icons/Copy.svg
                         // isn't bundled into the .lgx → the old Image button rendered
                         // blank/invisible; #33. A text label needs no external asset.)
-                        Text {
+                        LogosText {
                             id: copyAllBtn
                             text: "Copy"
-                            font.pixelSize: 11
-                            color: copyAllArea.containsMouse ? root.textSecondary : root.textMuted
+                            font.pixelSize: Theme.typography.secondaryText
+                            color: copyAllArea.containsMouse ? Theme.palette.textSecondary : Theme.palette.textMuted
                             Behavior on color { ColorAnimation { duration: 120 } }
                             Timer { id: copyResetTimer; interval: 1200; onTriggered: copyAllBtn.text = "Copy" }
 
@@ -1486,10 +1429,10 @@ Item {
                             }
                         }
 
-                        Text {
+                        LogosText {
                             text: "Clear"
-                            font.pixelSize: 11
-                            color: clearLogArea.containsMouse ? root.textSecondary : root.textMuted
+                            font.pixelSize: Theme.typography.secondaryText
+                            color: clearLogArea.containsMouse ? Theme.palette.textSecondary : Theme.palette.textMuted
                             Behavior on color { ColorAnimation { duration: 120 } }
                             MouseArea {
                                 id: clearLogArea
@@ -1508,14 +1451,14 @@ Item {
                     // ── Free-text inscribe (#25) ──────────────────────────────
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 6
+                        spacing: Theme.spacing.small
 
                         Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: Math.min(72, Math.max(32, inscribeInput.implicitHeight + 12))
-                            color: root.bgSecondary
-                            radius: 4
-                            border.color: inscribeInput.activeFocus ? root.accentOrange : root.borderColor
+                            color: Theme.palette.backgroundSecondary
+                            radius: Theme.spacing.radiusSmall
+                            border.color: inscribeInput.activeFocus ? Theme.palette.primary : Theme.palette.borderHairline
                             border.width: 1
                             clip: true
 
@@ -1523,82 +1466,40 @@ Item {
                                 anchors.fill: parent
                                 anchors.margins: 6
 
-                                TextArea {
+                                LogosTextArea {
                                     id: inscribeInput
-                                    color: root.textPrimary
-                                    font.pixelSize: 11
-                                    font.family: "Courier New, monospace"
+                                    color: Theme.palette.text
+                                    font.pixelSize: Theme.typography.secondaryText
+                                    font.family: root.monoFont
                                     wrapMode: TextArea.Wrap
                                     placeholderText: "Inscribe anything — e.g. {\"v\":1,\"type\":\"ia_item\",\"id\":\"…\",\"name\":\"…\",\"size\":123}"
-                                    placeholderTextColor: root.textMuted
+                                    placeholderTextColor: Theme.palette.textMuted
                                     background: null
                                 }
                             }
                         }
 
-                        Rectangle {
-                            width: 72; height: 32; radius: 4
+                        LogosButton {
+                            implicitWidth: 72; implicitHeight: 32
+                            Layout.preferredWidth: 72; Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignTop
+                            radius: Theme.spacing.radiusSmall
+                            text: root.inscribeBusy ? "…" : "Inscribe"
                             // pollBusy deliberately NOT in this binding — the 5/6/10s
                             // poll timers flip it constantly and the button would
                             // flicker; inscribeCid() rejects busy clicks itself
-                            property bool ready: root.zoneSeqReady
-                                                 && inscribeInput.text.trim().length > 0
-                                                 && !root.inscribeBusy
-                            color: root.inscribeBusy             ? root.accentOrange
-                                 : !ready                        ? root.bgSecondary
-                                 : inscribeArea.pressed          ? root.accentPressed
-                                 : inscribeArea.containsMouse    ? root.accentHover
-                                 : root.accentOrange
-
-                            Text {
-                                anchors.centerIn: parent
-                                visible: !root.inscribeBusy
-                                text: "Inscribe"
-                                color: parent.ready ? "#FFFFFF" : root.textMuted
-                                font.pixelSize: 12; font.bold: true
-                            }
-
-                            // keycard-style request-in-flight dots
-                            Row {
-                                anchors.centerIn: parent
-                                visible: root.inscribeBusy
-                                spacing: 6
-
-                                Repeater {
-                                    model: 3
-                                    Rectangle {
-                                        width: 6; height: 6; radius: 3
-                                        color: "#FFFFFF"
-
-                                        SequentialAnimation on opacity {
-                                            running: root.inscribeBusy
-                                            loops: Animation.Infinite
-                                            PauseAnimation { duration: index * 200 }
-                                            NumberAnimation { from: 0.2; to: 1; duration: 300 }
-                                            NumberAnimation { from: 1; to: 0.2; duration: 300 }
-                                            PauseAnimation { duration: (2 - index) * 200 }
-                                        }
-                                    }
-                                }
-                            }
-
-                            MouseArea {
-                                id: inscribeArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: parent.ready ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                enabled: parent.ready
-                                onClicked: {
-                                    var t = inscribeInput.text.trim()
-                                    if (t.length === 0) return
-                                    inscribeInput.text = ""        // request registered — input is free
-                                    root.inscribeBusy = true
-                                    root.appendActivity("inscribe requested — publishing "
-                                        + t.substring(0, 40) + (t.length > 40 ? "…" : ""), "info")
-                                    root._pendingInscribeText = t
-                                    inscribeKick.start()
-                                }
+                            enabled: root.zoneSeqReady
+                                     && inscribeInput.text.trim().length > 0
+                                     && !root.inscribeBusy
+                            onClicked: {
+                                var t = inscribeInput.text.trim()
+                                if (t.length === 0) return
+                                inscribeInput.text = ""        // request registered — input is free
+                                root.inscribeBusy = true
+                                root.appendActivity("inscribe requested — publishing "
+                                    + t.substring(0, 40) + (t.length > 40 ? "…" : ""), "info")
+                                root._pendingInscribeText = t
+                                inscribeKick.start()
                             }
                         }
                     }
@@ -1606,19 +1507,19 @@ Item {
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        color: "#0D0D0D"
-                        radius: 6
-                        border.color: root.borderColor
+                        color: Theme.palette.backgroundSecondary
+                        radius: Theme.spacing.radiusMedium
+                        border.color: Theme.palette.borderHairline
                         border.width: 1
                         clip: true
 
-                        Text {
+                        LogosText {
                             anchors.centerIn: parent
                             visible: logModel.count === 0
                             text: "Nothing yet — inscriptions and activity land here"
-                            color: root.textMuted
-                            font.pixelSize: 11
-                            font.family: "Courier New, monospace"
+                            color: Theme.palette.textMuted
+                            font.pixelSize: Theme.typography.secondaryText
+                            font.family: root.monoFont
                         }
 
                         ListView {
@@ -1626,10 +1527,10 @@ Item {
                             anchors { fill: parent; margins: 10 }
                             model: logModel
                             clip: true
-                            spacing: 2
+                            spacing: Theme.spacing.tiny
                             onCountChanged: Qt.callLater(() => logListView.positionViewAtEnd())
 
-                            delegate: Item {
+                            delegate: Rectangle {
                                 id: logEntry
                                 required property int    index
                                 required property string rowType
@@ -1646,22 +1547,42 @@ Item {
 
                                 width: logListView.width
                                 implicitHeight: rowType === "activity"
-                                                ? actLine.implicitHeight + 2
-                                                : entryCol.implicitHeight + 10
+                                                ? actLine.implicitHeight + 8
+                                                : entryCol.implicitHeight + 12
+                                color: Theme.palette.backgroundElevated
+                                radius: Theme.spacing.radiusSmall
+
+                                // 3px status/level accent stripe
+                                Rectangle {
+                                    anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                                    width: 3
+                                    radius: Theme.spacing.radiusSmall
+                                    color: logEntry.rowType === "activity"
+                                        ? (logEntry.level === "success" ? Theme.palette.success
+                                         : logEntry.level === "error"   ? Theme.palette.error
+                                         : logEntry.level === "muted"   ? Theme.palette.textSecondary
+                                         : Theme.palette.info)
+                                        : (logEntry.isDone   ? Theme.palette.success
+                                         : logEntry.isFailed ? Theme.palette.error
+                                         : logEntry.status === "finalizing" ? Theme.palette.info
+                                         : Theme.palette.warning)
+                                }
 
                                 // Activity row — one selectable monospace line
                                 TextEdit {
                                     id: actLine
                                     visible: logEntry.rowType === "activity"
-                                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                                    anchors { left: parent.left; right: parent.right; top: parent.top
+                                              leftMargin: Theme.spacing.small; rightMargin: Theme.spacing.small
+                                              topMargin: Theme.spacing.tiny }
                                     text: "[" + logEntry.tsStr + "] " + logEntry.msg
-                                    color: logEntry.level === "success" ? root.successGreen
-                                         : logEntry.level === "error"   ? root.errorRed
-                                         : logEntry.level === "muted"   ? root.textMuted
-                                         : root.textSecondary
-                                    font.pixelSize: 11; font.family: "Courier New, monospace"
+                                    color: logEntry.level === "success" ? Theme.palette.success
+                                         : logEntry.level === "error"   ? Theme.palette.error
+                                         : logEntry.level === "muted"   ? Theme.palette.textMuted
+                                         : Theme.palette.textSecondary
+                                    font.pixelSize: Theme.typography.secondaryText; font.family: root.monoFont
                                     wrapMode: Text.WrapAnywhere; readOnly: true; selectByMouse: true
-                                    selectedTextColor: root.bgPrimary; selectionColor: root.textSecondary
+                                    selectedTextColor: Theme.palette.background; selectionColor: Theme.palette.textSecondary
                                 }
 
                                 // Progress: lib advancing from libAtSubmit toward slotFrom
@@ -1710,114 +1631,110 @@ Item {
                                     id: entryCol
                                     visible: logEntry.rowType === "entry"
                                     anchors { left: parent.left; right: parent.right
-                                              top: parent.top; topMargin: 4 }
-                                    spacing: 3
+                                              top: parent.top; topMargin: Theme.spacing.tiny
+                                              leftMargin: Theme.spacing.small; rightMargin: Theme.spacing.small }
+                                    spacing: Theme.spacing.tiny
 
-                                    // Line 1: [time] label   source
+                                    // Line 1: [time] label   source   status badge
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        spacing: 6
+                                        spacing: Theme.spacing.small
 
-                                        Text {
+                                        LogosText {
                                             text: "[" + tsStr + "] " + (label.length > 0 ? label : cid.substring(0, 20) + "…")
-                                            font.pixelSize: 11
-                                            font.family: "Courier New, monospace"
-                                            color: logEntry.isDone   ? root.successGreen
-                                                 : logEntry.isFailed ? root.errorRed
-                                                 : root.textPrimary
+                                            font.pixelSize: Theme.typography.secondaryText
+                                            font.family: root.monoFont
+                                            color: logEntry.isDone   ? Theme.palette.success
+                                                 : logEntry.isFailed ? Theme.palette.error
+                                                 : Theme.palette.text
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                         }
 
-                                        Text {
+                                        LogosText {
                                             visible: source.length > 0
                                             text: source
-                                            font.pixelSize: 9
-                                            color: root.textMuted
+                                            font.pixelSize: Theme.typography.badgeText
+                                            color: Theme.palette.textMuted
+                                        }
+
+                                        // Status pill (submitted/queued/finalizing/confirmed/failed)
+                                        LogosBadge {
+                                            visible: status.length > 0
+                                            text: status
+                                            radius: Theme.spacing.radiusPill
+                                            color: status === "confirmed" || status === "ok" ? Theme.palette.success
+                                                 : status === "failed" || status === "error" ? Theme.palette.error
+                                                 : status === "finalizing" ? Theme.palette.info
+                                                 : Theme.palette.warning
                                         }
                                     }
 
                                     // Line 2: CID  +  progress bar / hash + copy URL / failed
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        spacing: 6
+                                        spacing: Theme.spacing.small
 
-                                        Text {
+                                        LogosText {
                                             // pseudo-cids ("text:<epoch>") key free-text rows — noise, not content
                                             visible: cid.indexOf("text:") !== 0
                                             text: cid.length > 0 ? cid.substring(0, 20) + "…" : "…"
-                                            font.pixelSize: 10
-                                            font.family: "Courier New, monospace"
-                                            color: root.textMuted
+                                            font.pixelSize: Theme.typography.secondaryText
+                                            font.family: root.monoFont
+                                            color: Theme.palette.textMuted
                                         }
 
                                         // Progress bar (in-flight only)
                                         Rectangle {
                                             visible: logEntry.inFlight
                                             Layout.fillWidth: true
-                                            height: 4; radius: 2
-                                            color: root.bgSecondary
+                                            height: 4; radius: Theme.spacing.radiusSmall
+                                            color: Theme.palette.backgroundSecondary
 
                                             Rectangle {
                                                 width: parent.width * logEntry.progressVal
                                                 height: parent.height; radius: parent.radius
-                                                color: root.accentOrange
+                                                color: Theme.palette.primary
                                                 Behavior on width { NumberAnimation { duration: 600 } }
                                             }
                                         }
 
                                         // Time estimate while lib catches up; then "confirming…"
                                         // until the explorer scan returns the tx hash (status → confirmed).
-                                        Text {
+                                        LogosText {
                                             visible: logEntry.inFlight
                                                      && (logEntry.timeEst.length > 0 || logEntry.confirming)
                                             text: logEntry.confirming ? "confirming…" : logEntry.timeEst
-                                            font.pixelSize: 10
-                                            color: logEntry.confirming ? root.accentOrange : root.textMuted
+                                            font.pixelSize: Theme.typography.secondaryText
+                                            color: logEntry.confirming ? Theme.palette.primary : Theme.palette.textMuted
                                         }
 
                                         // Truncated hash (confirmed)
-                                        Text {
+                                        LogosText {
                                             visible: logEntry.isDone && inscriptionId.length > 0
                                             text: inscriptionId.substring(0, 16) + "…"
-                                            font.pixelSize: 10
-                                            font.family: "Courier New, monospace"
-                                            color: root.successGreen
+                                            font.pixelSize: Theme.typography.secondaryText
+                                            font.family: root.monoFont
+                                            color: Theme.palette.success
                                         }
 
                                         // Copy URL button (confirmed)
-                                        Rectangle {
+                                        LogosButton {
                                             visible: logEntry.isDone && logEntry.explorerUrl.length > 0
-                                            height: 18
-                                            implicitWidth: copyUrlLabel.implicitWidth + 14
-                                            radius: 3
-                                            color: copyUrlArea.pressed      ? root.accentPressed
-                                                 : copyUrlArea.containsMouse ? root.accentHover : root.bgSecondary
-                                            border.color: root.borderColor; border.width: 1
-                                            Behavior on color { ColorAnimation { duration: 80 } }
-
-                                            Text {
-                                                id: copyUrlLabel
-                                                anchors.centerIn: parent
-                                                text: "copy URL"
-                                                font.pixelSize: 9
-                                                color: root.textPrimary
-                                            }
-
-                                            MouseArea {
-                                                id: copyUrlArea
-                                                anchors.fill: parent
-                                                hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                                onClicked: root.copyToClipboard(logEntry.explorerUrl)
-                                            }
+                                            implicitHeight: 18
+                                            implicitWidth: 72
+                                            Layout.preferredHeight: 18
+                                            radius: Theme.spacing.radiusSmall
+                                            text: "copy URL"
+                                            onClicked: root.copyToClipboard(logEntry.explorerUrl)
                                         }
 
                                         // Failed label
-                                        Text {
+                                        LogosText {
                                             visible: logEntry.isFailed
                                             text: "failed"
-                                            font.pixelSize: 10
-                                            color: root.errorRed
+                                            font.pixelSize: Theme.typography.secondaryText
+                                            color: Theme.palette.error
                                         }
                                     }
                                 }
@@ -1831,10 +1748,10 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
 
-                Text {
+                LogosText {
                     text: "Learn more about Beacon"
-                    font.pixelSize: 11
-                    color: root.textSecondary
+                    font.pixelSize: Theme.typography.secondaryText
+                    color: Theme.palette.textSecondary
                 }
 
                 Item {
