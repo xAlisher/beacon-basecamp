@@ -371,7 +371,13 @@ Item {
                                     channelId:   useChannelId,
                                     slotFrom:    nodeSlot,
                                     libAtSubmit: libSlot,
-                                    cid:         cid
+                                    cid:         cid,
+                                    // #44: enough to re-inscribe on non-inclusion (bootstrap
+                                    // re-fetches the current tip, so a retry is a valid fresh op)
+                                    useKey:      useKey,
+                                    payload:     payload,
+                                    source:      source || "",
+                                    retries:     0
                                 })
                                 root.pendingFinalizations = updatedPF
 
@@ -701,7 +707,22 @@ Item {
         }
     }
 
-    // ── Finalization poll — confirms via /channel/{id} tip_slot vs LIB (#43) ──
+    // ── #44 inclusion watchdog: config + re-inscribe helper ─────────────────────
+    property int inclusionWindow:     120   // node slots (~2 min); not `safe` past this ⇒ dropped
+    property int maxInclusionRetries: 4
+    function republishItem(item) {
+        if (!root.beacon) return
+        // Empty checkpoint path ⇒ bootstrap re-fetches the current /channel tip, so the
+        // retry chains correctly (root for a fresh channel, real tip otherwise).
+        logos.watch(root.beacon.seqPublish(root.nodeUrl, item.channelId, item.useKey, "", item.payload),
+            function (pubRaw) {
+                if (root.seqIsError(pubRaw))
+                    appendActivity("re-inscribe error: " + root.seqError(pubRaw), "error")
+            },
+            function (e) {})
+    }
+
+    // ── Finalization + inclusion watchdog — /channel/{id}: pending→safe→finalized (#43/#44) ──
     Timer {
         id: finalizationTimer
         interval: 6000
@@ -716,33 +737,11 @@ Item {
             logos.watch(root.beacon.getNodeInfo(), function (niRaw2) {
                 var ni2 = root.callModuleParse(niRaw2)
                 if (ni2 && ni2.lib_slot) root.currentLibSlot = ni2.lib_slot
-                var libNow = root.currentLibSlot
+                var libNow  = root.currentLibSlot
+                var slotNow = (ni2 && ni2.slot) ? ni2.slot : 0
 
-                var pf = root.pendingFinalizations
+                var lookups   = root.pendingFinalizations.slice()   // check every pending item
                 var remaining = []
-                var lookups   = []   // items past slotFrom → check /channel state
-
-                for (var i = 0; i < pf.length; i++) {
-                    var item = pf[i]
-                    // feed row keyed by cid — entryIndex stays the C++ log index only
-                    var fRow = root.feedRowFor(item.cid || "")
-
-                    // Need lib_slot to have advanced past slotFrom for the tx to be finalized
-                    if (libNow <= item.slotFrom) {
-                        // Update to "finalizing" once node slot has passed slotFrom
-                        if (libNow > 0 && item.slotFrom > 0 && fRow >= 0) {
-                            var curSt = logModel.get(fRow).status
-                            if (curSt === "submitted" || curSt === "queued") {
-                                logModel.setProperty(fRow, "status", "finalizing")
-                                logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "finalizing"), function () {}, function () {})
-                            }
-                        }
-                        remaining.push(item)
-                        continue
-                    }
-                    lookups.push(item)
-                }
-
                 if (lookups.length === 0) {
                     root.pendingFinalizations = remaining
                     root.finalizationBusy = false
@@ -761,14 +760,15 @@ Item {
                 for (var k = 0; k < lookups.length; k++) {
                     (function (item) {
                         var fRow = root.feedRowFor(item.cid || "")
-                        // v0.2 (beacon#43): confirm via /channel/{id}. The old
-                        // /cryptarchia/blocks scan returns [] on v0.2. tip_slot <= libNow
-                        // means the channel (incl. our inscription) is finalized.
+                        // pending → safe → finalized via /channel/{id} (#43), with an
+                        // inclusion watchdog that re-inscribes if the op never goes safe (#44).
                         logos.watch(root.beacon.getChannelState(item.channelId),
                             function (fRaw) {
-                                var cs = root.callModuleParse(fRaw)
-                                if (cs && cs.found === true && cs.tipSlot >= 0 && cs.tipSlot <= libNow) {
-                                    // Finalized (safe + slot <= LIB) — record the message id
+                                var cs   = root.callModuleParse(fRaw)
+                                var safe = cs && cs.found === true && cs.tipSlot >= 0
+
+                                if (safe && cs.tipSlot <= libNow) {
+                                    // FINALIZED (safe + slot ≤ LIB)
                                     var msgId = cs.tipMessage || ""
                                     logos.watch(root.beacon.confirmInscription(item.entryIndex, msgId, "confirmed"), function () {}, function () {})
                                     if (fRow >= 0) {
@@ -777,22 +777,46 @@ Item {
                                     }
                                     root.inscribedCount++
                                     appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  slot " + cs.tipSlot, "success")
-                                } else if (libNow > item.slotFrom + 14400) {
-                                    // Timed out — ~4 hours without finalizing
-                                    logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "failed"), function () {}, function () {})
-                                    if (fRow >= 0)
-                                        logModel.setProperty(fRow, "status", "failed")
-                                    appendActivity("failed (timeout): " + item.cid.substring(0, 16) + "…", "error")
-                                } else {
-                                    // safe-but-not-finalized, or not landed yet — keep finalizing
+                                    // drop
+                                } else if (safe) {
+                                    // SAFE (in a block) but not yet finalized — awaiting finality
                                     if (fRow >= 0) {
-                                        var st2 = logModel.get(fRow).status
-                                        if (st2 !== "finalizing") {
+                                        var s1 = logModel.get(fRow).status
+                                        if (s1 !== "finalizing") {
                                             logModel.setProperty(fRow, "status", "finalizing")
                                             logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "finalizing"), function () {}, function () {})
                                         }
                                     }
                                     remaining.push(item)
+                                } else {
+                                    // NOT safe (pending / dropped) — #44 inclusion watchdog
+                                    var age = (slotNow > 0 && item.slotFrom > 0) ? (slotNow - item.slotFrom) : 0
+                                    if (age <= root.inclusionWindow) {
+                                        // still within the inclusion window — awaiting inclusion
+                                        if (fRow >= 0) {
+                                            var s2 = logModel.get(fRow).status
+                                            if (s2 === "submitted" || s2 === "queued")
+                                                logModel.setProperty(fRow, "status", "finalizing")
+                                        }
+                                        remaining.push(item)
+                                    } else if ((item.retries || 0) < root.maxInclusionRetries) {
+                                        // never went safe within the window → dropped from mempool.
+                                        // re-inscribe (bootstrap re-fetches the current tip).
+                                        item.retries  = (item.retries || 0) + 1
+                                        item.slotFrom = slotNow            // fresh window for this attempt
+                                        appendActivity("⚠ not included after ~" + root.inclusionWindow +
+                                            " slots — re-inscribing " + item.cid.substring(0, 16) + "… (retry " +
+                                            item.retries + "/" + root.maxInclusionRetries + ")", "info")
+                                        root.republishItem(item)
+                                        remaining.push(item)
+                                    } else {
+                                        // gave up after N retries
+                                        logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "failed"), function () {}, function () {})
+                                        if (fRow >= 0) logModel.setProperty(fRow, "status", "failed")
+                                        appendActivity("✗ failed — not included after " + root.maxInclusionRetries +
+                                            " retries: " + item.cid.substring(0, 16) + "…", "error")
+                                        // drop
+                                    }
                                 }
                                 lookupDone()
                             },
