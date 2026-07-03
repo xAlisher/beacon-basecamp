@@ -717,6 +717,8 @@ Item {
     property int maxInclusionRetries: 4
     function republishItem(item) {
         if (!root.beacon) return
+        // restored (pre-#44) items lack the key/payload → can't re-inscribe; skip quietly
+        if (!item.channelId || !item.useKey || !item.payload) return
         // Empty checkpoint path ⇒ bootstrap re-fetches the current /channel tip, so the
         // retry chains correctly (root for a fresh channel, real tip otherwise).
         logos.watch(root.beacon.seqPublish(root.nodeUrl, item.channelId, item.useKey, "", item.payload),
@@ -1034,31 +1036,10 @@ Item {
                 }
 
                 // Status pill
-                Rectangle {
-                    height: 28
-                    implicitWidth: statusPillRow.implicitWidth + 20
+                LogosBadge {
+                    text: root.inscribedCount + " inscribed"
                     radius: Theme.spacing.radiusPill
-                    color: Theme.palette.backgroundSecondary
-                    border.color: Theme.palette.borderHairline
-                    border.width: 1
-
-                    RowLayout {
-                        id: statusPillRow
-                        anchors { left: parent.left; leftMargin: 10; verticalCenter: parent.verticalCenter }
-                        spacing: Theme.spacing.small
-
-                        Rectangle {
-                            width: 7; height: 7; radius: Theme.spacing.radiusPill
-                            Layout.alignment: Qt.AlignVCenter
-                            color: root.zoneSeqReady ? Theme.palette.success : Theme.palette.error
-                        }
-
-                        LogosText {
-                            text: root.inscribedCount + " inscribed"
-                            font.pixelSize: Theme.typography.secondaryText
-                            color: Theme.palette.text
-                        }
-                    }
+                    color: root.zoneSeqReady ? Theme.palette.success : Theme.palette.error
                 }
 
                 // Gear button — settings toggle
@@ -1266,10 +1247,12 @@ Item {
                     spacing: 6
 
                     RowLayout {
-                        width: parent.width
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 34
 
                         ColumnLayout {
                             Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
                             spacing: 1
 
                             LogosText {
@@ -1376,6 +1359,7 @@ Item {
 
                     RowLayout {
                         Layout.fillWidth: true
+                        Layout.preferredHeight: 34
                         spacing: Theme.spacing.tiny
 
                         LogosText {
@@ -1480,11 +1464,19 @@ Item {
                         }
 
                         LogosButton {
+                            id: inscribeBtn
                             implicitWidth: 72; implicitHeight: 32
                             Layout.preferredWidth: 72; Layout.preferredHeight: 32
                             Layout.alignment: Qt.AlignTop
                             radius: Theme.spacing.radiusSmall
                             text: root.inscribeBusy ? "…" : "Inscribe"
+                            // primary CTA: filled brand fill instead of LogosButton's subtle default
+                            background: Rectangle {
+                                radius: inscribeBtn.radius
+                                color: !inscribeBtn.enabled ? Theme.palette.backgroundMuted
+                                     : inscribeBtn.isActive ? Theme.palette.primaryPressed
+                                     : Theme.palette.primary
+                            }
                             // pollBusy deliberately NOT in this binding — the 5/6/10s
                             // poll timers flip it constantly and the button would
                             // flicker; inscribeCid() rejects busy clicks itself
@@ -1564,7 +1556,7 @@ Item {
                                          : Theme.palette.info)
                                         : (logEntry.isDone   ? Theme.palette.success
                                          : logEntry.isFailed ? Theme.palette.error
-                                         : logEntry.status === "finalizing" ? Theme.palette.info
+                                         : logEntry.status === "finalizing" ? Theme.palette.primary
                                          : Theme.palette.warning)
                                 }
 
@@ -1665,7 +1657,7 @@ Item {
                                             radius: Theme.spacing.radiusPill
                                             color: status === "confirmed" || status === "ok" ? Theme.palette.success
                                                  : status === "failed" || status === "error" ? Theme.palette.error
-                                                 : status === "finalizing" ? Theme.palette.info
+                                                 : status === "finalizing" ? Theme.palette.primary
                                                  : Theme.palette.warning
                                         }
                                     }
