@@ -39340,11 +39340,11 @@
         "zone_sequencer": "zone_sequencer"
       },
       "locked": {
-        "lastModified": 1782941501,
-        "narHash": "sha256-U4pMYLUeZVYodFpopqUmG+qXpa8rfcKX3wQ8VVPg5Ow=",
+        "lastModified": 1783118112,
+        "narHash": "sha256-0PL9v3Ih+mbn2+aNz6IiCwjVMk9Jy4bCa7Sx6V+uC1w=",
         "ref": "main",
-        "rev": "b0d87bdb702f6fda40a283147d9e103c2862805e",
-        "revCount": 51,
+        "rev": "736ac0fb1b26f9f440503992b95fdc32a7c4a690",
+        "revCount": 56,
         "type": "git",
         "url": "file:///home/alisher/basecamp/modules/beacon-basecamp"
       },
