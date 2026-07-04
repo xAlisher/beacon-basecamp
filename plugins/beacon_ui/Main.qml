@@ -1541,8 +1541,10 @@ Item {
                                 implicitHeight: rowType === "activity"
                                                 ? actLine.implicitHeight + 8
                                                 : entryCol.implicitHeight + 12
-                                color: Theme.palette.backgroundElevated
+                                color: "transparent"
                                 radius: Theme.spacing.radiusSmall
+                                border.width: 1
+                                border.color: Theme.palette.borderHairline
 
                                 // 3px status/level accent stripe
                                 Rectangle {
