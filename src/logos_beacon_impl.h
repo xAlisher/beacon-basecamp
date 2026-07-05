@@ -74,6 +74,9 @@ public:
     // ── zone_sequencer bridge (v0.2 — replaces QML's direct callModule) ─────────
     /// Derive the 64-hex channel id for a signing key via modules().zone_sequencer.
     StdLogosResult seqDeriveChannel(const std::string& signingKeyHex);
+    // The channel a source (e.g. "keeper") inscribes to = derive_channel_id(SHA256(masterKey+source)).
+    // Lets consumers (keeper log 'copy URL') build explorer.logos.live/#<channel> without re-deriving.
+    StdLogosResult getSourceChannel(const std::string& source);
     /// Stateless publish to a channel via modules().zone_sequencer.publish_to.
     /// Returns the inscription/tx id string. Runs the whole cross-module hop in C++.
     StdLogosResult seqPublish(const std::string& nodeUrl, const std::string& channelId,

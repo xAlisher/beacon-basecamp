@@ -452,6 +452,15 @@ StdLogosResult LogosBeaconImpl::seqDeriveChannel(const std::string& signingKeyHe
 {
     return modules().zone_sequencer.derive_channel_id(signingKeyHex);
 }
+StdLogosResult LogosBeaconImpl::getSourceChannel(const std::string& source)
+{
+    // per-module signing key (SHA256(masterKey + source)), then derive the channel via zone_sequencer
+    StdLogosResult sk = adapt(d->deriveModuleSigningKey(qs(source)));
+    if (!sk.success) return sk;
+    const std::string keyHex = sk.value.value("signingKey", std::string());
+    if (keyHex.empty()) return {false, {}, "no signing key"};
+    return modules().zone_sequencer.derive_channel_id(keyHex);
+}
 StdLogosResult LogosBeaconImpl::seqPublish(const std::string& nodeUrl, const std::string& channelId,
                                            const std::string& signingKeyHex, const std::string& checkpointPath,
                                            const std::string& payload)
