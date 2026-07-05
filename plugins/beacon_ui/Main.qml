@@ -1741,13 +1741,15 @@ Item {
 
                                         // Copy URL button (confirmed)
                                         LogosButton {
+                                            id: copyUrlBtn
                                             visible: logEntry.isDone && logEntry.explorerUrl.length > 0
                                             implicitHeight: 18
                                             implicitWidth: 72
                                             Layout.preferredHeight: 18
                                             radius: Theme.spacing.radiusSmall
                                             text: "copy URL"
-                                            onClicked: root.copyToClipboard(logEntry.explorerUrl)
+                                            Timer { id: copyUrlReset; interval: 1200; onTriggered: copyUrlBtn.text = "copy URL" }
+                                            onClicked: { root.copyToClipboard(logEntry.explorerUrl); copyUrlBtn.text = "copied ✓"; copyUrlReset.restart() }
                                         }
 
                                         // Failed label
