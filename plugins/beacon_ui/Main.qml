@@ -1752,6 +1752,19 @@ Item {
                                             onClicked: { root.copyToClipboard(logEntry.explorerUrl); copyUrlBtn.text = "copied ✓"; copyUrlReset.restart() }
                                         }
 
+                                        // Copy the RAW per-module channel id — paste into IA-archiver / explorer [#49]
+                                        LogosButton {
+                                            id: copyChBtn
+                                            visible: logEntry.isDone && logEntry.channelForRow.length > 0
+                                            implicitHeight: 18
+                                            implicitWidth: 64
+                                            Layout.preferredHeight: 18
+                                            radius: Theme.spacing.radiusSmall
+                                            text: "copy ch"
+                                            Timer { id: copyChReset; interval: 1200; onTriggered: copyChBtn.text = "copy ch" }
+                                            onClicked: { root.copyToClipboard(logEntry.channelForRow); copyChBtn.text = "copied ✓"; copyChReset.restart() }
+                                        }
+
                                         // Failed label
                                         LogosText {
                                             visible: logEntry.isFailed
