@@ -29,7 +29,7 @@ static constexpr const char* kWatchStashKey      = "beacon/watchStash";
 static constexpr const char* kChannelLabelKey    = "beacon/channelLabel";
 static constexpr const char* kWatchedSourcesKey  = "beacon/watchedSources";
 static constexpr const char* kExplorerUrlKey     = "beacon/explorerUrl";
-static constexpr const char* kDefaultExplorerUrl = "https://logosblocks.noders.services";
+static constexpr const char* kDefaultExplorerUrl = "https://explorer.logos.live";
 
 // ── pimpl: the Qt internals, preserved from the legacy BeaconPlugin ─────────────
 struct LogosBeaconImpl::Impl

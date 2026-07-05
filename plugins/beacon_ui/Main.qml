@@ -28,7 +28,10 @@ Item {
     // ── State ─────────────────────────────────────────────────────────────────
     property string channelId:         ""
     property string nodeUrl:           "http://127.0.0.1:8080"
-    property string explorerUrl:       "https://logosblocks.noders.services"
+    property string explorerUrl:       "https://explorer.logos.live"
+    // Fixed proof explorer for user-facing links — immune to any stale persisted explorerUrl.
+    // explorer.logos.live decodes raw ChannelInscribe (state + content); links are /#<channel_id>.
+    readonly property string proofExplorer: "https://explorer.logos.live"
     property string signingKeyHex:     ""
     property string persistencePath:   ""
     property bool   watchStash:        true   // always on; no UI toggle
@@ -1623,9 +1626,15 @@ Item {
                                     return "~" + mins + ":" + (secs < 10 ? "0" : "") + secs
                                 }
 
+                                // The channel this inscription landed on — per-module for keeper/stash
+                                // (derive_channel_id(SHA256(key+source))), else the primary channel.
+                                property string channelForRow:
+                                    (source && root.moduleChannels[source] && root.moduleChannels[source].channelId)
+                                    ? root.moduleChannels[source].channelId
+                                    : root.channelId
                                 property string explorerUrl:
-                                    inscriptionId.length > 0
-                                    ? root.explorerUrl + "/txs/" + inscriptionId
+                                    channelForRow.length > 0
+                                    ? root.proofExplorer + "/#" + channelForRow
                                     : ""
 
                                 property bool inFlight: status === "queued"
