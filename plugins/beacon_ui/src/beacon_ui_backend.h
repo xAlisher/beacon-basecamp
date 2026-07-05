@@ -23,6 +23,8 @@ public:
     QString setWatchedSources(QString sources) override;
     QString getWatchedSources() override;
     QString setChannelLabel(QString label) override;
+    QString getKeeperInscriptionQueue() override;
+    QString markKeeperInscribed(QString cid) override;
 
     // ── State ───────────────────────────────────────────────────────────────
     QString getStatus() override;

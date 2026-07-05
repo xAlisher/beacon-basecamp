@@ -181,3 +181,16 @@ QString BeaconUiBackend::ping()
     return QStringLiteral("{\"ok\":true,\"module\":\"beacon_ui\",\"ctxReady\":%1}")
         .arg(isContextReady() ? QStringLiteral("true") : QStringLiteral("false"));
 }
+
+
+// keeper is now universal — callModule returns null (beacon#46), so reach it via modules().keeper.
+// Universal deps are SYNC-safe from a ui-host backend.
+QString BeaconUiBackend::getKeeperInscriptionQueue()
+{
+    return resultToJson(modules().keeper.getInscriptionQueue());
+}
+
+QString BeaconUiBackend::markKeeperInscribed(QString cid)
+{
+    return resultToJson(modules().keeper.markInscribed(cid));
+}
