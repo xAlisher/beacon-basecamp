@@ -1,15 +1,20 @@
 {
   "name": "beacon_ui",
   "version": "1.0.0",
-  "description": "Beacon UI — on-chain CID inscription",
+  "description": "Beacon UI \u2014 on-chain CID inscription",
   "author": "Beacon",
   "type": "ui_qml",
   "interface": "universal",
   "pluginType": "qml",
   "main": "beacon_ui_plugin",
   "view": "Main.qml",
-  "dependencies": ["logos_beacon"],
-  "codegen": { "rep": "src/beacon_ui.rep" },
+  "dependencies": [
+    "logos_beacon",
+    "keeper"
+  ],
+  "codegen": {
+    "rep": "src/beacon_ui.rep"
+  },
   "category": "storage",
   "capabilities": [],
   "icon": "icons/Beacon_sidebar.png"

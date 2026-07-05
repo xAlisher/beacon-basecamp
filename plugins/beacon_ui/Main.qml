@@ -466,39 +466,57 @@ Item {
     function pollModules() {
         if (root.pollBusy) return
         if (!root.keycardConnected) return
-        if (typeof logos === "undefined" || !logos.callModule) return
+        if (typeof logos === "undefined") return
         if (root.watchedSources.length === 0) return
 
-        // Gather queued entries across all watched sources. getInscriptionQueue /
-        // markInscribed target legacy source modules (keeper, stash, …) reachable
-        // via callModule — only the logos_beacon/zone_sequencer hop moved to the
-        // backend. Collect synchronously, then inscribe one at a time (inscribeCid
-        // is async and self-guards pollBusy).
+        // Gather queued entries across all watched sources, then inscribe one at a time.
+        // keeper is now UNIVERSAL — callModule returns null (beacon#46), so it's fetched via the
+        // backend (root.beacon.getKeeperInscriptionQueue, async). Legacy sources still use callModule.
+        // Gathering is therefore async: collect all, then inscribe.
         var pending = []
-        for (var i = 0; i < root.watchedSources.length; i++) {
-            var moduleName = root.watchedSources[i]
-            var queueRaw   = logos.callModule(moduleName, "getInscriptionQueue", [])
-            var queue      = callModuleParse(queueRaw)
-            if (!Array.isArray(queue) || queue.length === 0) continue
+
+        function addQueue(moduleName, queue) {
+            if (!Array.isArray(queue)) return
             for (var j = 0; j < queue.length; j++) {
                 var entry = queue[j]
-                if (!entry.cid) continue
+                if (!entry || !entry.cid) continue
                 pending.push({ moduleName: moduleName, cid: entry.cid, label: entry.label || entry.cid })
             }
         }
-        if (pending.length === 0) return
 
-        function processNext(idx) {
-            if (idx >= pending.length) return
-            var p = pending[idx]
-            appendActivity("queued from " + p.moduleName + ": " + p.cid.substring(0, 16) + "…", "info")
-            inscribeCid(p.cid, p.label, p.moduleName, "", function (inscribed) {
-                if (inscribed)
-                    logos.callModule(p.moduleName, "markInscribed", [p.cid])
-                processNext(idx + 1)
-            })
+        function inscribeAll() {
+            if (pending.length === 0) return
+            function processNext(idx) {
+                if (idx >= pending.length) return
+                var p = pending[idx]
+                appendActivity("queued from " + p.moduleName + ": " + p.cid.substring(0, 16) + "\u2026", "info")
+                inscribeCid(p.cid, p.label, p.moduleName, "", function (inscribed) {
+                    if (inscribed) {
+                        if (p.moduleName === "keeper" && root.beacon)
+                            logos.watch(root.beacon.markKeeperInscribed(p.cid), function () {}, function () {})
+                        else if (logos.callModule)
+                            logos.callModule(p.moduleName, "markInscribed", [p.cid])
+                    }
+                    processNext(idx + 1)
+                })
+            }
+            processNext(0)
         }
-        processNext(0)
+
+        function gatherNext(i) {
+            if (i >= root.watchedSources.length) { inscribeAll(); return }
+            var moduleName = root.watchedSources[i]
+            if (moduleName === "keeper" && root.beacon) {
+                logos.watch(root.beacon.getKeeperInscriptionQueue(), function (raw) {
+                    addQueue(moduleName, callModuleParse(raw)); gatherNext(i + 1)
+                }, function () { gatherNext(i + 1) })
+            } else if (logos.callModule) {
+                addQueue(moduleName, callModuleParse(logos.callModule(moduleName, "getInscriptionQueue", []))); gatherNext(i + 1)
+            } else {
+                gatherNext(i + 1)
+            }
+        }
+        gatherNext(0)
     }
 
     // ── Anchor tx resolution (module sub-channels) ────────────────────────────
