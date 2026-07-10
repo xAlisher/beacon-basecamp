@@ -1,52 +1,40 @@
-# Halt — 2026-06-07
+# Halt — 2026-07-10
+
+## ▶ Resume this session
+```bash
+cd ~/basecamp/modules/beacon-basecamp && claude --resume 1e8dfb1b-c6d0-4a34-94ee-d7d6726332e9
+```
+Fallback: `claude --continue`.
 
 ## Where we stopped
+Diagnosed a stuck keeper inscription in beacon ("Vanishing Privacy") — filed two **high-priority** bugs.
+Beacon is on `main`; no code changes this session (diagnosis only).
 
-Implemented the full inscription lifecycle (issues #17, #18, #19, #20) across beacon and keeper.
-Both modules built, installed, Basecamp launched (PID 542269). Waiting for Alisher to do manual
-test: keep an IA item in Keeper, watch the progress bar, confirm the "copy URL" button works
-after ~8 min finalization. Issues are NOT closed — user said to wait until after manual test.
+## 🔴 High priority (both `priority:high`)
+1. **#50 — fresh-channel bootstrap stall** (functional). A keeper inscription to the fresh keeper channel
+   `dcab09a0…` never lands: `status: submitted`, **empty `inscriptionId`**, `GET /channel/dcab09a0…` = 500
+   "channel not found" on Paradox. Node LIB advancing (not a lag). The GUI beacon's **sync `seqPublish`**
+   stalls "waiting for sequencer ready" on a long chain (~874k slots). Fix = LIB-pinned bootstrap (like our
+   headless `zone-sequencer-rs` harness, which bootstraps fresh channels fine — that's how `7ec988ab` landed)
+   and/or make the call async. Master channel `3a9d3849…` IS bootstrapped and works — only the fresh keeper
+   channel stalls.
+2. **#52 — misleading state** (UI/correctness). Beacon shows **"finalising"** for that failed inscription
+   (empty `inscriptionId`, channel not on-chain). `confirmInscription` (`src/logos_beacon_impl.cpp:226`)
+   stores whatever status the caller passes without reconciling. Fix: empty `inscriptionId` → `failed`;
+   verify `GET /channel/{id}` 200+tip before advancing to `finalising`; feed non-inclusion into #44.
 
 ## Current state
-
-### beacon-basecamp
-- Branch: `feat/inscription-lifecycle`
-- Last commit: `1ca899b feat: resume in-flight finalizations after keycard re-auth`
-- Build status: 34/34 tests passing
-- Open review: Senty review done (manual, Codex sandbox blocked filesystem). Two fixes applied
-  (dead `pendingResolutions` removed, `findExplorerTxHash` simplified to read `mantle_tx.hash`
-  directly from node block scan instead of 3-step explorer round-trip).
-- Installed: `~/.local/share/Logos/LogosBasecamp/modules/logos_beacon/logos_beacon_plugin.so`
-             `~/.local/share/Logos/LogosBasecamp/plugins/beacon_ui/Main.qml`
-
-### keeper-basecamp
-- Branch: `feat/inscription-lifecycle`
-- Last commit: `7dbfc6b feat: inscription lifecycle UI — progress bar, ~M:SS, copy URL`
-- Build status: nix build clean; keeper_plugin.so installed via lgpm; Main.qml copied directly
-- Installed: `~/.local/share/Logos/LogosBasecamp/modules/keeper/keeper_plugin.so`
-             `~/.local/share/Logos/LogosBasecamp/plugins/keeper_ui/Main.qml`
+- Branch: **main** · Build: passing (no changes this session)
+- Gateway (`[beacon] nodeUrl`): `https://logos-testnet.paradox.computer` (a proposing node — correct)
+- Related open: #51 (rc5 sequencer spike — resolves #50 upstream), #44 (self-healing detect+retry), #27 (fake inscriptionId)
 
 ## Next steps (in order)
-
-1. **Alisher tests manually** — keep an IA item, watch progress bar (~8 min), copy URL, confirm explorer link works
-2. **Close resolved issues** once test passes:
-   - beacon #17 (wrong inscriptionId hash), #18 (stale checkpoint), #19 (slotFrom param), #20 (UX lifecycle), #15 (copy button)
-   - keeper #19 (explorer URL 404), #25 (lifecycle UI), #17 (stale checkpoint inherited fix)
-3. **Push both branches** to GitHub and open PRs if not already done
-4. **Log wins** in keeper retro-log for the lifecycle work
-5. **Update CODEX.md** in both repos with new log entry schema fields (`slotFrom`, `libAtSubmit`, `inscriptionStatus`)
-
-## Blockers
-
-- Manual test must pass before closing issues (user decision)
-- keeper nix build uses git tree — next time, commit before `nix build` or manually copy QML post-install (as done this session)
+1. **#50** — LIB-pinned / async fresh-channel publish (or land one op on `dcab09a0…` headlessly to bootstrap it — needs the keeper key = `SHA256(master+"keeper")`, keycard-only → a keycard tap).
+2. **#52** — fix the status reconciliation (don't show `finalising` without an `inscriptionId` + on-chain tip).
+3. Consider #51 (rc5) as the upstream fix for #50.
 
 ## Context that's hard to re-derive
-
-- `mantle_tx.hash` (from node block API) == the explorer hash. `zone_sequencer_publish` return value is Poseidon2 TxHash — different value, NEVER use as explorer URL. Confirmed in retro log (win 2026-06-07).
-- `findExplorerTxHash` was originally a 3-step (node scan → fork-choice API → explorer blocks API). Simplified to just read `mantle_tx.hash` from node scan directly (Senty review finding). The 3-step is dead code.
-- Keeper's `pollForTxHash` was timing out at 24 × 5s = 2 min, well before beacon's ~8-min finalization. Increased to 120 × 5s = 10 min.
-- Beacon restart recovery: `pendingFinalizations` is in-memory only. After keycard re-auth, the keycardAuthPollTimer handler now scans `logModel` for in-flight entries and re-populates `pendingFinalizations` with the correct channelId (derived from source if needed).
-- keeper nix build ignores dirty working tree changes for cached derivations — always `cp` the QML manually after `nix build` or commit first.
-- Progress bar formula: `(currentLibSlot - libAtSubmit) / (slotFrom - libAtSubmit)`. slotFrom = node slot at inscription time, libAtSubmit = lib_slot at inscription time. Bar fills as lib advances toward slotFrom (~485 slots = ~8 min).
-- Issues #14 (inscription not landing on testnet) and beacon #1 (keycard connection) are older open issues that were NOT part of this session — don't conflate them with the lifecycle work.
+- **No data loss** on the stuck item: content IS pinned to Logos Storage (real CIDs `zDvZ…` in the inscription label) — only the on-chain pointer failed.
+- Our **headless harness handles fresh-channel bootstrap** by pinning to current LIB (skips genesis backfill); the GUI beacon does NOT — that's the core of #50.
+- keeper channel `dcab09a0…` = `pubkey(SHA256(masterKey+"keeper"))`; master is keycard-only/in-memory (can't extract headlessly — OS ptrace_scope=1 + safety guard).
+- Paradox's `clock`-tx accumulation tip (LORE Discord thread): fresh-channel timeout scales with chain length; rc5 fix = `block_create_timeout: 60s`. Relevant only after moving off our custom zone-sequencer-rs.
