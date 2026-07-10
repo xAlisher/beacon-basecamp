@@ -53,12 +53,6 @@ QString BeaconUiBackend::getWatchedSources()
     return resultToJson(modules().logos_beacon.getWatchedSources());
 }
 
-QString BeaconUiBackend::setChannelLabel(QString label)
-{
-    if (!isContextReady()) return "{\"error\":\"context not ready\"}";
-    return resultToJson(modules().logos_beacon.setChannelLabel(label));
-}
-
 // ── State ─────────────────────────────────────────────────────────────────────
 QString BeaconUiBackend::getStatus()
 {
@@ -148,13 +142,6 @@ QString BeaconUiBackend::recordManifest(QString moduleName)
 }
 
 // ── Finalization / explorer lookups ──────────────────────────────────────────────
-QString BeaconUiBackend::findExplorerTxHash(QString channelId, int slotFrom, int slotTo)
-{
-    if (!isContextReady()) return "{\"error\":\"context not ready\"}";
-    return resultToJson(modules().logos_beacon.findExplorerTxHash(
-        channelId, slotFrom, slotTo));
-}
-
 QString BeaconUiBackend::getChannelState(QString channelId)
 {
     if (!isContextReady()) return "{\"error\":\"context not ready\"}";

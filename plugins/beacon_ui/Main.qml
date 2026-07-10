@@ -28,8 +28,7 @@ Item {
     // ── State ─────────────────────────────────────────────────────────────────
     property string channelId:         ""
     property string nodeUrl:           "http://127.0.0.1:8080"
-    property string explorerUrl:       "https://explorer.logos.live"
-    // Fixed proof explorer for user-facing links — immune to any stale persisted explorerUrl.
+    // Fixed proof explorer for user-facing links.
     // explorer.logos.live decodes raw ChannelInscribe (state + content); links are /#<channel_id>.
     readonly property string proofExplorer: "https://explorer.logos.live"
     property string signingKeyHex:     ""
@@ -43,8 +42,6 @@ Item {
     property double pollBusySince:     0     // ms when pollBusy last went true (guard-recovery)
     property var    manifestedModules: ({})   // module name → true, loaded from manifest-log.json
     property int    inscribedCount:    0
-    property string channelLabel:      "My Beacon"   // kept for future use
-    property string broadcastStatus:   ""             // kept for future use
 
     // ── Inscription lifecycle state ───────────────────────────────────────────
     property int  currentLibSlot:      0
@@ -409,25 +406,34 @@ Item {
                                     finish(false); return
                                 }
 
-                                // Submitted — deferred confirmation via finalizationTimer
-                                logos.watch(root.beacon.confirmInscription(entryIndex, "", "submitted"), function () {}, function () {})
+                                // Submitted — deferred confirmation via finalizationTimer.
+                                // Keep THIS item's own publish tx hash as its inscription id.
+                                // (Regression #43/cf9e941: finalization used to overwrite every
+                                // item's id with the shared channel tip → all links collapsed to
+                                // one. The publish result IS the per-item id; store it here.)
+                                var txHash = root.seqResult(pubRaw)
+                                logos.watch(root.beacon.confirmInscription(entryIndex, txHash, "submitted"), function () {}, function () {})
                                 feedRow = feedRowFor(cid)
-                                if (feedRow >= 0)
+                                if (feedRow >= 0) {
                                     logModel.setProperty(feedRow, "status", "submitted")
+                                    if (txHash.length > 0)
+                                        logModel.setProperty(feedRow, "inscriptionId", txHash)
+                                }
 
                                 var updatedPF = root.pendingFinalizations.slice()
                                 updatedPF.push({
-                                    entryIndex:  entryIndex,
-                                    channelId:   useChannelId,
-                                    slotFrom:    nodeSlot,
-                                    libAtSubmit: libSlot,
-                                    cid:         cid,
+                                    entryIndex:    entryIndex,
+                                    channelId:     useChannelId,
+                                    slotFrom:      nodeSlot,
+                                    libAtSubmit:   libSlot,
+                                    cid:           cid,
+                                    inscriptionId: txHash,   // this item's own tx hash — never the channel tip
                                     // #44: enough to re-inscribe on non-inclusion (bootstrap
                                     // re-fetches the current tip, so a retry is a valid fresh op)
-                                    useKey:      useKey,
-                                    payload:     payload,
-                                    source:      source || "",
-                                    retries:     0
+                                    useKey:        useKey,
+                                    payload:       payload,
+                                    source:        source || "",
+                                    retries:       0
                                 })
                                 root.pendingFinalizations = updatedPF
 
@@ -468,31 +474,6 @@ Item {
         var t = text.trim()
         if (t.length === 0) { if (done) done(false); return }
         inscribeCid("text:" + Date.now(), t, "", t, done)
-    }
-
-    // ── Broadcast channel announce (kept for future use; not exposed in UI) ───
-    function broadcastChannel() {
-        if (root.pollBusy) return
-        if (!root.beacon || !root.zoneSeqReady || root.channelId === "") return
-        root.pollBusy = true
-        root.broadcastStatus = ""
-
-        logos.watch(root.beacon.setChannelLabel(root.channelLabel), function () {}, function () {})
-
-        var payload = JSON.stringify({
-            v:          1,
-            type:       "channel_announce",
-            module:     "logos_beacon",
-            channel_id: root.channelId,
-            label:      root.channelLabel,
-            ts:         Math.floor(Date.now() / 1000)
-        })
-
-        root.seqPublishAsync(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload,
-            function (pubRaw) {
-                root.broadcastStatus = root.seqIsError(pubRaw) ? "error" : "ok"
-                root.pollBusy = false
-            })
     }
 
     // ── Module inscription queue polling ─────────────────────────────────────
@@ -599,7 +580,7 @@ Item {
                     if (cur.label !== (e.label || ""))
                         logModel.setProperty(row, "label", e.label || "")
                 }
-                if (e.status === "ok" || e.status === "confirmed") count++
+                if (e.status === "confirmed") count++
             }
             for (var j = logModel.count - 1; j >= 0; j--) {
                 var r = logModel.get(j)
@@ -622,11 +603,15 @@ Item {
             // Collect candidates first (index = C++ log index = entryIndex), then
             // resolve each source's channel via the async setupModuleChannel before
             // committing pendingFinalizations.
+            // Only re-arm items that actually LANDED a publish (non-empty inscriptionId).
+            // A "queued"/failed row never produced a tx hash, so it must not be re-armed
+            // to finalization (which would otherwise falsely confirm against the tip).
             var candidates = []
             for (var ri = 0; ri < rLog.length; ri++) {
                 var re = rLog[ri]
-                if ((re.status === "submitted" || re.status === "finalizing" || re.status === "queued")
-                        && (re.slotFrom || 0) > 0) {
+                if ((re.status === "submitted" || re.status === "finalizing")
+                        && (re.slotFrom || 0) > 0
+                        && (re.inscriptionId || "") !== "") {
                     candidates.push({ index: ri, entry: re })
                 }
             }
@@ -646,11 +631,12 @@ Item {
                     var re = c.entry
                     function push(chId) {
                         restored.push({
-                            entryIndex:  c.index,
-                            channelId:   chId,
-                            slotFrom:    re.slotFrom || 0,
-                            libAtSubmit: re.libAtSubmit || 0,
-                            cid:         re.cid || ""
+                            entryIndex:    c.index,
+                            channelId:     chId,
+                            slotFrom:      re.slotFrom || 0,
+                            libAtSubmit:   re.libAtSubmit || 0,
+                            cid:           re.cid || "",
+                            inscriptionId: re.inscriptionId || ""   // carry the real id into finalization
                         })
                         one()
                     }
@@ -699,9 +685,7 @@ Item {
             var cfg = callModuleParse(cfgRaw)
             if (!cfg) return
             root.nodeUrl         = cfg.nodeUrl         || "http://127.0.0.1:8080"
-            root.explorerUrl     = cfg.explorerUrl     || root.explorerUrl
             root.persistencePath = cfg.persistencePath || ""
-            root.channelLabel    = cfg.channelLabel    || "My Beacon"
             if (typeof nodeUrlInput !== "undefined")
                 nodeUrlInput.text = root.nodeUrl
         }, function () {})
@@ -881,20 +865,35 @@ Item {
                             function (fRaw) {
                                 var cs   = root.callModuleParse(fRaw)
                                 var safe = cs && cs.found === true && cs.tipSlot >= 0
+                                // INCLUDED = the channel tip has advanced to/past THIS item's submit
+                                // slot — i.e. the item's OWN op actually landed on-chain. NOT merely
+                                // that the channel exists with some old finalized tip. Critical: a new
+                                // item on a channel that already has finalized history would otherwise
+                                // confirm instantly against a tip that predates it (verified live: node
+                                // tip stayed at slot 885277 while the item submitted at 901905, yet it
+                                // "confirmed"). The publish returns a TxHash, not the on-chain MsgId, and
+                                // there is no per-message lookup — so "tip advanced past submit" is the
+                                // honest inclusion signal we have (#50/#51).
+                                var included = safe && (item.slotFrom || 0) > 0 && cs.tipSlot >= item.slotFrom
 
-                                if (safe && cs.tipSlot <= libNow) {
-                                    // FINALIZED (safe + slot ≤ LIB)
-                                    var msgId = cs.tipMessage || ""
-                                    logos.watch(root.beacon.confirmInscription(item.entryIndex, msgId, "confirmed"), function () {}, function () {})
-                                    if (fRow >= 0) {
-                                        if (msgId.length > 0) logModel.setProperty(fRow, "inscriptionId", msgId)
-                                        logModel.setProperty(fRow, "status", "confirmed")
+                                if (included && cs.tipSlot <= libNow) {
+                                    // FINALIZED (included + slot ≤ LIB). Confirm with THIS item's OWN
+                                    // inscription id (its publish tx hash, already on the row and
+                                    // carried on `item`), never the shared channel tip (cs.tipMessage).
+                                    // Gate honestly: an item with no real publish id is NOT confirmed.
+                                    if (item.inscriptionId && item.inscriptionId.length > 0) {
+                                        logos.watch(root.beacon.confirmInscription(item.entryIndex, item.inscriptionId, "confirmed"), function () {}, function () {})
+                                        if (fRow >= 0) logModel.setProperty(fRow, "status", "confirmed")
+                                        root.inscribedCount++
+                                        appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  slot " + cs.tipSlot, "success")
+                                    } else {
+                                        logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "failed"), function () {}, function () {})
+                                        if (fRow >= 0) logModel.setProperty(fRow, "status", "failed")
+                                        appendActivity("not confirmed (no inscription id): " + item.cid.substring(0, 16) + "…", "error")
                                     }
-                                    root.inscribedCount++
-                                    appendActivity("confirmed: " + item.cid.substring(0, 16) + "…  slot " + cs.tipSlot, "success")
                                     // drop
-                                } else if (safe) {
-                                    // SAFE (in a block) but not yet finalized — awaiting finality
+                                } else if (included) {
+                                    // INCLUDED (item's op landed) but tip not yet ≤ LIB — awaiting finality
                                     if (fRow >= 0) {
                                         var s1 = logModel.get(fRow).status
                                         if (s1 !== "finalizing") {
@@ -904,7 +903,9 @@ Item {
                                     }
                                     remaining.push(item)
                                 } else {
-                                    // NOT safe (pending / dropped / channel not found) — #44 inclusion watchdog
+                                    // NOT included — the item's own op has not landed (channel not found,
+                                    // OR found but its tip is still behind this item's submit slot, i.e.
+                                    // the op didn't include). #44 inclusion watchdog: wait, then retry/fail.
                                     var age = (slotNow > 0 && item.slotFrom > 0) ? (slotNow - item.slotFrom) : 0
                                     if (age <= root.inclusionWindow) {
                                         // Still within the inclusion window — awaiting inclusion.
@@ -1690,8 +1691,8 @@ Item {
 
                                 // Progress: lib advancing from libAtSubmit toward slotFrom
                                 property real progressVal: {
-                                    if (status === "confirmed" || status === "ok") return 1.0
-                                    if (status === "failed" || status === "error") return 0.0
+                                    if (status === "confirmed") return 1.0
+                                    if (status === "failed") return 0.0
                                     if (slotFrom <= 0 || libAtSubmit <= 0) return 0.0
                                     var total = slotFrom - libAtSubmit
                                     if (total <= 0) return 0.0
@@ -1704,8 +1705,7 @@ Item {
 
                                 // Remaining slots → ~M:SS estimate
                                 property string timeEst: {
-                                    if (status === "confirmed" || status === "ok"
-                                            || status === "failed" || status === "error") return ""
+                                    if (status === "confirmed" || status === "failed") return ""
                                     if (slotFrom <= 0 || root.currentLibSlot <= 0) return ""
                                     var rem = slotFrom - root.currentLibSlot
                                     if (rem <= 0) return ""
@@ -1720,17 +1720,30 @@ Item {
                                     (source && root.moduleChannels[source] && root.moduleChannels[source].channelId)
                                     ? root.moduleChannels[source].channelId
                                     : root.channelId
+                                // Per-item inscription deep-link. Keyed by the item's CID — that IS
+                                // "what was inscribed" (the cid_pin payload's `cid`), and it is the field
+                                // an explorer can match when it decodes the channel's ChannelInscribe
+                                // messages (the Mantle TxHash we hold is NOT in the decoded payload, so it
+                                // can't be matched content-side). Free-text rows ("text:<epoch>") have no
+                                // real CID → fall back to the channel-level link.
+                                //   RENDERING of #<channel>/<cid> is explorer-side work (beacon#55 +
+                                //   the explorer deep-link issue): explorer.logos.live today only parses
+                                //   #<channel>. beacon emits the correct per-item URL; the explorer must
+                                //   learn to decode + highlight the matching inscription.
+                                property bool hasRealCid: cid.length > 0 && cid.indexOf("text:") !== 0
                                 property string explorerUrl:
                                     channelForRow.length > 0
-                                    ? root.proofExplorer + "/#" + channelForRow
+                                    ? (hasRealCid
+                                        ? root.proofExplorer + "/#" + channelForRow + "/" + cid
+                                        : root.proofExplorer + "/#" + channelForRow)
                                     : ""
 
                                 property bool inFlight: status === "queued"
                                                      || status === "submitting"
                                                      || status === "submitted"
                                                      || status === "finalizing"
-                                property bool isDone:   status === "confirmed" || status === "ok"
-                                property bool isFailed: status === "failed" || status === "error"
+                                property bool isDone:   status === "confirmed"
+                                property bool isFailed: status === "failed"
                                 // lib has caught up to the submit slot but the explorer scan hasn't
                                 // returned the tx hash yet → finalization imminent. Show "confirming…"
                                 // instead of a stuck full bar with no link.
@@ -1773,8 +1786,8 @@ Item {
                                             visible: status.length > 0
                                             text: status
                                             radius: Theme.spacing.radiusPill
-                                            color: status === "confirmed" || status === "ok" ? Theme.palette.success
-                                                 : status === "failed" || status === "error" ? Theme.palette.error
+                                            color: status === "confirmed" ? Theme.palette.success
+                                                 : status === "failed" ? Theme.palette.error
                                                  : status === "finalizing" ? Theme.palette.primary
                                                  : Theme.palette.warning
                                         }

@@ -12,7 +12,6 @@
 #include <QFile>
 #include <QDir>
 #include <QCryptographicHash>
-#include <QTextStream>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
@@ -23,13 +22,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <openssl/evp.h>   // local Ed25519 channel-id derivation (beacon#50)
+
 // QSettings key prefix (unchanged from the legacy BeaconPlugin).
 static constexpr const char* kNodeUrlKey         = "beacon/nodeUrl";
-static constexpr const char* kWatchStashKey      = "beacon/watchStash";
-static constexpr const char* kChannelLabelKey    = "beacon/channelLabel";
 static constexpr const char* kWatchedSourcesKey  = "beacon/watchedSources";
-static constexpr const char* kExplorerUrlKey     = "beacon/explorerUrl";
-static constexpr const char* kDefaultExplorerUrl = "https://explorer.logos.live";
 
 // ── pimpl: the Qt internals, preserved from the legacy BeaconPlugin ─────────────
 struct LogosBeaconImpl::Impl
@@ -64,13 +61,6 @@ struct LogosBeaconImpl::Impl
         if (url.endsWith('/')) url.chop(1);
         return url;
     }
-    QString explorerBaseUrl() const
-    {
-        QSettings s;
-        QString url = s.value(QLatin1String(kExplorerUrlKey), QLatin1String(kDefaultExplorerUrl)).toString();
-        if (url.endsWith('/')) url.chop(1);
-        return url;
-    }
 
     void loadLog()
     {
@@ -101,10 +91,7 @@ struct LogosBeaconImpl::Impl
         QSettings s; QJsonObject o;
         o[QStringLiteral("signingKeyHex")]   = m_signingKeyHex;
         o[QStringLiteral("nodeUrl")]         = s.value(QLatin1String(kNodeUrlKey), QStringLiteral("http://127.0.0.1:8080")).toString();
-        o[QStringLiteral("watchStash")]      = s.value(QLatin1String(kWatchStashKey), true).toBool();
         o[QStringLiteral("persistencePath")] = m_persistencePath;
-        o[QStringLiteral("channelLabel")]    = s.value(QLatin1String(kChannelLabelKey), QStringLiteral("My Beacon")).toString();
-        o[QStringLiteral("explorerUrl")]     = explorerBaseUrl();
         return QJsonDocument(o).toJson(QJsonDocument::Compact);
     }
     QString setNodeUrl(const QString& url)
@@ -112,7 +99,6 @@ struct LogosBeaconImpl::Impl
         if (url.trimmed().isEmpty()) return errorJson(QStringLiteral("url must not be empty"));
         QSettings s; s.setValue(QLatin1String(kNodeUrlKey), url.trimmed()); return okJson();
     }
-    QString setWatchStash(bool enabled) { QSettings s; s.setValue(QLatin1String(kWatchStashKey), enabled); return okJson(); }
     QString setWatchedSources(const QString& newlineSeparated)
     {
         m_watchedSources.clear();
@@ -126,14 +112,13 @@ struct LogosBeaconImpl::Impl
         QJsonArray arr; for (const QString& src : m_watchedSources) arr.append(src);
         QJsonObject o; o[QStringLiteral("sources")] = arr; return QJsonDocument(o).toJson(QJsonDocument::Compact);
     }
-    QString setChannelLabel(const QString& label) { QSettings s; s.setValue(QLatin1String(kChannelLabelKey), label.trimmed()); return okJson(); }
 
     QString getStatus() const
     {
         int inscribedCids = 0;
         for (int i = 0; i < m_log.size(); ++i) {
             const QString st = m_log[i].toObject()[QStringLiteral("status")].toString();
-            if (st == QLatin1String("ok") || st == QLatin1String("confirmed")) ++inscribedCids;
+            if (st == QLatin1String("confirmed")) ++inscribedCids;
         }
         QJsonObject o;
         o[QStringLiteral("configured")]    = !m_signingKeyHex.isEmpty();
@@ -221,12 +206,16 @@ struct LogosBeaconImpl::Impl
         return errorJson(QStringLiteral("failed to create checkpoints dir"));
     }
 
-    // confirmInscription returns the entry so the adapter can emit the event.
     QString confirmInscription(int entryIndex, const QString& inscriptionId, const QString& status)
     {
         if (entryIndex < 0 || entryIndex >= m_log.size()) return errorJson(QStringLiteral("entryIndex out of range"));
         QJsonObject entry = m_log[entryIndex].toObject();
-        entry[QStringLiteral("inscriptionId")] = inscriptionId; entry[QStringLiteral("status")] = status;
+        // Preserve a real per-item inscription id: a later status-only update (e.g.
+        // "finalizing") passes "" and must NOT wipe the tx hash captured at submit
+        // (beacon#50 / #43 regression — ids used to collapse to the shared channel tip).
+        if (!inscriptionId.isEmpty())
+            entry[QStringLiteral("inscriptionId")] = inscriptionId;
+        entry[QStringLiteral("status")] = status;
         m_log[entryIndex] = entry; saveLog();
         return okJson();
     }
@@ -260,28 +249,6 @@ struct LogosBeaconImpl::Impl
         wf.write(QJsonDocument(arr).toJson(QJsonDocument::Compact)); return okJson();
     }
 
-    QString findAnchorTx(const QString& nUrl, const QString& channelId, int slotFrom, int slotTo)
-    {
-        QJsonObject result; result[QStringLiteral("txHash")] = QString();
-        QString base = nUrl; if (base.endsWith('/')) base.chop(1);
-        QNetworkReply* reply = getSync(QString("%1/cryptarchia/blocks?slot_from=%2&slot_to=%3").arg(base).arg(slotFrom).arg(slotTo));
-        if (reply->error() != QNetworkReply::NoError) { reply->deleteLater(); return QJsonDocument(result).toJson(QJsonDocument::Compact); }
-        QJsonDocument doc = QJsonDocument::fromJson(reply->readAll()); reply->deleteLater();
-        if (!doc.isArray()) return QJsonDocument(result).toJson(QJsonDocument::Compact);
-        for (const QJsonValue& bv : doc.array()) {
-            for (const QJsonValue& tv : bv[QStringLiteral("transactions")].toArray()) {
-                const QJsonObject mtx = tv[QStringLiteral("mantle_tx")].toObject();
-                for (const QJsonValue& ov : mtx[QStringLiteral("ops")].toArray()) {
-                    if (ov[QStringLiteral("payload")][QStringLiteral("channel_id")].toString() == channelId) {
-                        result[QStringLiteral("txHash")] = mtx[QStringLiteral("hash")].toString();
-                        return QJsonDocument(result).toJson(QJsonDocument::Compact);
-                    }
-                }
-            }
-        }
-        return QJsonDocument(result).toJson(QJsonDocument::Compact);
-    }
-
     // v0.2 confirmation path (beacon#43). GET /channel/{id} returns 500 ("no state")
     // until an op lands, then 200 with tip_slot/tip_message — the "safe" state (in an
     // L1 block). Callers finalize when tip_slot <= lib_slot. Replaces the
@@ -305,78 +272,6 @@ struct LogosBeaconImpl::Impl
         result[QStringLiteral("tipMessage")] = o.value(QStringLiteral("tip_message")).toString();
         return QJsonDocument(result).toJson(QJsonDocument::Compact);
     }
-
-    QString findExplorerTxHash(const QString& channelId, int slotFrom, int slotTo)
-    {
-        QJsonObject result; result[QStringLiteral("txHash")] = QString(); result[QStringLiteral("blockHash")] = QString(); result[QStringLiteral("found")] = false;
-        if (channelId.isEmpty() || slotFrom <= 0) return QJsonDocument(result).toJson(QJsonDocument::Compact);
-        QNetworkReply* blocksReply = getSync(QString("%1/cryptarchia/blocks?slot_from=%2&slot_to=%3").arg(nodeUrl()).arg(slotFrom).arg(slotTo));
-        if (blocksReply->error() != QNetworkReply::NoError) { blocksReply->deleteLater(); return QJsonDocument(result).toJson(QJsonDocument::Compact); }
-        QJsonDocument blocksDoc = QJsonDocument::fromJson(blocksReply->readAll()); blocksReply->deleteLater();
-        if (!blocksDoc.isArray()) return QJsonDocument(result).toJson(QJsonDocument::Compact);
-        QString blockHeaderId; int txIndex = -1;
-        for (const QJsonValue& bv : blocksDoc.array()) {
-            const QJsonObject block = bv.toObject();
-            const QString bid = block[QStringLiteral("header")][QStringLiteral("id")].toString();
-            const QJsonArray txs = block[QStringLiteral("transactions")].toArray();
-            for (int ti = 0; ti < txs.size(); ++ti) {
-                const QJsonArray ops = txs[ti][QStringLiteral("mantle_tx")][QStringLiteral("ops")].toArray();
-                for (const QJsonValue& ov : ops) {
-                    if (ov[QStringLiteral("payload")][QStringLiteral("channel_id")].toString() == channelId) { blockHeaderId = bid; txIndex = ti; goto found_block; }
-                }
-            }
-        }
-        return QJsonDocument(result).toJson(QJsonDocument::Compact);
-    found_block:
-        QNetworkReply* explorerReply = getSync(QString("%1/api/blocks/%2").arg(explorerBaseUrl(), blockHeaderId));
-        QString txHash;
-        if (explorerReply->error() == QNetworkReply::NoError) {
-            QJsonDocument ed = QJsonDocument::fromJson(explorerReply->readAll());
-            for (const QJsonValue& tv : ed[QStringLiteral("transactions")].toArray()) {
-                if (tv[QStringLiteral("index_in_block")].toInt(-1) == txIndex) { txHash = tv[QStringLiteral("tx_hash")].toString(); break; }
-            }
-        }
-        explorerReply->deleteLater();
-        if (!txHash.isEmpty()) { result[QStringLiteral("txHash")] = txHash; result[QStringLiteral("blockHash")] = blockHeaderId; result[QStringLiteral("found")] = true; }
-        else { result[QStringLiteral("txHash")] = blockHeaderId; result[QStringLiteral("blockHash")] = blockHeaderId; result[QStringLiteral("found")] = true; }
-        return QJsonDocument(result).toJson(QJsonDocument::Compact);
-    }
-
-    QString getBlockForTx(const QString& txHash, int slotFrom)
-    {
-        QJsonObject result; result[QStringLiteral("blockHash")] = QString(); result[QStringLiteral("found")] = false;
-        if (txHash.isEmpty()) return QJsonDocument(result).toJson(QJsonDocument::Compact);
-        QNetworkReply* infoReply = getSync(nodeUrl() + QStringLiteral("/cryptarchia/info"));
-        if (infoReply->error() != QNetworkReply::NoError) { infoReply->deleteLater(); return QJsonDocument(result).toJson(QJsonDocument::Compact); }
-        QJsonDocument infoDoc = QJsonDocument::fromJson(infoReply->readAll()); infoReply->deleteLater();
-        const QJsonObject infoObj = infoDoc.object();
-        const QJsonObject ciScan = infoObj.contains(QStringLiteral("cryptarchia_info")) ? infoObj.value(QStringLiteral("cryptarchia_info")).toObject() : infoObj;
-        int libSlot = ciScan[QStringLiteral("lib_slot")].toInt(0);
-        if (libSlot <= 0) return QJsonDocument(result).toJson(QJsonDocument::Compact);
-        int scanFrom = (slotFrom > 0) ? slotFrom : qMax(0, libSlot - 5000);
-        QNetworkReply* blocksReply = getSync(QString("%1/cryptarchia/blocks?slot_from=%2&slot_to=%3").arg(nodeUrl()).arg(scanFrom).arg(libSlot));
-        if (blocksReply->error() != QNetworkReply::NoError) { blocksReply->deleteLater(); return QJsonDocument(result).toJson(QJsonDocument::Compact); }
-        QJsonDocument blocksDoc = QJsonDocument::fromJson(blocksReply->readAll()); blocksReply->deleteLater();
-        if (!blocksDoc.isArray()) return QJsonDocument(result).toJson(QJsonDocument::Compact);
-        for (const QJsonValue& bv : blocksDoc.array()) {
-            const QJsonObject block = bv.toObject();
-            const QString headerId = block[QStringLiteral("header")][QStringLiteral("id")].toString();
-            for (const QJsonValue& tv : block[QStringLiteral("transactions")].toArray()) {
-                if (tv[QStringLiteral("mantle_tx")][QStringLiteral("hash")].toString() == txHash) {
-                    result[QStringLiteral("blockHash")] = headerId; result[QStringLiteral("found")] = true;
-                    return QJsonDocument(result).toJson(QJsonDocument::Compact);
-                }
-            }
-        }
-        return QJsonDocument(result).toJson(QJsonDocument::Compact);
-    }
-
-    QString diagLog(const QString& msg)
-    {
-        QFile f(QStringLiteral("/tmp/beacon_plugin.diag"));
-        if (f.open(QIODevice::WriteOnly | QIODevice::Append)) { QTextStream ts(&f); ts << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << " " << msg << "\n"; }
-        return okJson();
-    }
 };
 
 // ── Adapter: QString-JSON → StdLogosResult ──────────────────────────────────────
@@ -397,10 +292,8 @@ LogosBeaconImpl::~LogosBeaconImpl() = default;
 // ── Config ──────────────────────────────────────────────────────────────────────
 StdLogosResult LogosBeaconImpl::getBeaconConfig()                         { return adapt(d->getBeaconConfig()); }
 StdLogosResult LogosBeaconImpl::setNodeUrl(const std::string& url)        { return adapt(d->setNodeUrl(qs(url))); }
-StdLogosResult LogosBeaconImpl::setWatchStash(const std::string& enabled) { return adapt(d->setWatchStash(enabled == "true" || enabled == "1")); }
 StdLogosResult LogosBeaconImpl::setWatchedSources(const std::string& s)   { return adapt(d->setWatchedSources(qs(s))); }
 StdLogosResult LogosBeaconImpl::getWatchedSources()                      { return adapt(d->getWatchedSources()); }
-StdLogosResult LogosBeaconImpl::setChannelLabel(const std::string& label) { return adapt(d->setChannelLabel(qs(label))); }
 
 // ── State ─────────────────────────────────────────────────────────────────────
 StdLogosResult LogosBeaconImpl::getStatus()             { return adapt(d->getStatus()); }
@@ -421,9 +314,7 @@ StdLogosResult LogosBeaconImpl::ensureCheckpointsDir()  { return adapt(d->ensure
 
 StdLogosResult LogosBeaconImpl::confirmInscription(int64_t entryIndex, const std::string& inscriptionId, const std::string& status)
 {
-    StdLogosResult r = adapt(d->confirmInscription(int(entryIndex), qs(inscriptionId), qs(status)));
-    if (r.success) inscriptionConfirmed(entryIndex, inscriptionId, status);
-    return r;
+    return adapt(d->confirmInscription(int(entryIndex), qs(inscriptionId), qs(status)));
 }
 
 // ── Key management ───────────────────────────────────────────────────────────────
@@ -435,31 +326,53 @@ StdLogosResult LogosBeaconImpl::getManifestLog()        { return adapt(d->getMan
 StdLogosResult LogosBeaconImpl::recordManifest(const std::string& m) { return adapt(d->recordManifest(qs(m))); }
 
 // ── Finalization / explorer lookups ──────────────────────────────────────────────
-StdLogosResult LogosBeaconImpl::findAnchorTx(const std::string& nodeUrl, const std::string& channelId, int64_t slotFrom, int64_t slotTo)
-{ return adapt(d->findAnchorTx(qs(nodeUrl), qs(channelId), int(slotFrom), int(slotTo))); }
 StdLogosResult LogosBeaconImpl::getChannelState(const std::string& channelId)
 { return adapt(d->getChannelState(qs(channelId))); }
-StdLogosResult LogosBeaconImpl::findExplorerTxHash(const std::string& channelId, int64_t slotFrom, int64_t slotTo)
-{ return adapt(d->findExplorerTxHash(qs(channelId), int(slotFrom), int(slotTo))); }
-StdLogosResult LogosBeaconImpl::getBlockForTx(const std::string& txHash, int64_t slotFrom)
-{ return adapt(d->getBlockForTx(qs(txHash), int(slotFrom))); }
-
-// ── Debug ─────────────────────────────────────────────────────────────────────────
-StdLogosResult LogosBeaconImpl::diagLog(const std::string& msg) { return adapt(d->diagLog(qs(msg))); }
 
 // ── zone_sequencer bridge (typed modules(), no getClient) ───────────────────────
+// LOCAL channel-id derivation (beacon#50). The channel id is the Ed25519 PUBLIC key of
+// the 32-byte signing-key seed (RFC 8032 — byte-identical to zone_sequencer's
+// ed25519-dalek `SigningKey::from_bytes(seed).verifying_key()`, verified vs the RFC 8032
+// test vector). It is a PUBLIC value and beacon already holds the seed, so there is no
+// reason to cross a module boundary for it. The old sync modules().zone_sequencer
+// .derive_channel_id spun a QtRO `waitForSource` nested event loop; a reentrant
+// `onClientRead` during that loop dereferenced a stale QMetaObject → SIGSEGV. Computing
+// it in-process removes the IPC entirely, so that crash path no longer exists.
+static std::string deriveChannelIdLocal(const std::string& signingKeyHex)
+{
+    // Strict: exactly 64 hex chars (32-byte seed) — matches zone_sequencer's hex::decode,
+    // which rejects odd/short input. (QByteArray::fromHex would otherwise pad an odd nibble.)
+    if (signingKeyHex.size() != 64) return std::string();
+    QByteArray seed = QByteArray::fromHex(QByteArray::fromStdString(signingKeyHex));
+    if (seed.size() != 32) return std::string();   // rejects non-hex chars within the 64
+    EVP_PKEY* pk = EVP_PKEY_new_raw_private_key(
+        EVP_PKEY_ED25519, nullptr,
+        reinterpret_cast<const unsigned char*>(seed.constData()), 32);
+    if (!pk) return std::string();
+    unsigned char pub[32];
+    size_t publen = sizeof(pub);
+    const int ok = EVP_PKEY_get_raw_public_key(pk, pub, &publen);
+    EVP_PKEY_free(pk);
+    if (ok != 1 || publen != 32) return std::string();
+    return QByteArray(reinterpret_cast<const char*>(pub), 32).toHex().toStdString();
+}
+
 StdLogosResult LogosBeaconImpl::seqDeriveChannel(const std::string& signingKeyHex)
 {
-    return modules().zone_sequencer.derive_channel_id(signingKeyHex);
+    const std::string ch = deriveChannelIdLocal(signingKeyHex);
+    if (ch.empty()) return {false, {}, "invalid signing key (expected 64-hex / 32-byte seed)"};
+    return {true, ch, {}};
 }
 StdLogosResult LogosBeaconImpl::getSourceChannel(const std::string& source)
 {
-    // per-module signing key (SHA256(masterKey + source)), then derive the channel via zone_sequencer
+    // per-module signing key (SHA256(masterKey + source)), then the channel id = its Ed25519 pubkey (local)
     StdLogosResult sk = adapt(d->deriveModuleSigningKey(qs(source)));
     if (!sk.success) return sk;
     const std::string keyHex = sk.value.value("signingKey", std::string());
     if (keyHex.empty()) return {false, {}, "no signing key"};
-    return modules().zone_sequencer.derive_channel_id(keyHex);
+    const std::string ch = deriveChannelIdLocal(keyHex);
+    if (ch.empty()) return {false, {}, "channel derivation failed"};
+    return {true, ch, {}};
 }
 StdLogosResult LogosBeaconImpl::seqPublish(int64_t token, const std::string& nodeUrl, const std::string& channelId,
                                            const std::string& signingKeyHex, const std::string& checkpointPath,

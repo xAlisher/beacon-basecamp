@@ -22,7 +22,6 @@ public:
     QString setNodeUrl(QString url) override;
     QString setWatchedSources(QString sources) override;
     QString getWatchedSources() override;
-    QString setChannelLabel(QString label) override;
     QString getKeeperInscriptionQueue() override;
     QString markKeeperInscribed(QString cid) override;
 
@@ -52,7 +51,6 @@ public:
     QString recordManifest(QString moduleName) override;
 
     // ── Finalization / explorer lookups ───────────────────────────────────────
-    QString findExplorerTxHash(QString channelId, int slotFrom, int slotTo) override;
     QString getChannelState(QString channelId) override;
 
     // ── zone_sequencer bridge (forwarded through logos_beacon) ────────────────

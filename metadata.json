@@ -8,15 +8,5 @@
   "dependencies": ["zone_sequencer"],
   "codegen": { "impl_header": "logos_beacon_impl.h" },
   "category": "storage",
-  "icon": "",
-  "nix": {
-    "packages": { "build": [], "runtime": [] },
-    "external_libraries": [],
-    "cmake": {
-      "find_packages": ["Qt6 REQUIRED COMPONENTS Core Qml"],
-      "extra_sources": ["src/plugin/BeaconPlugin.cpp"],
-      "extra_include_dirs": ["src"],
-      "extra_link_libraries": ["Qt6::Core", "Qt6::Qml"]
-    }
-  }
+  "icon": ""
 }

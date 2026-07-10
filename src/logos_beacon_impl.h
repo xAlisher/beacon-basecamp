@@ -29,10 +29,8 @@ public:
     // ── Config ────────────────────────────────────────────────────────────────
     StdLogosResult getBeaconConfig();
     StdLogosResult setNodeUrl(const std::string& url);
-    StdLogosResult setWatchStash(const std::string& enabled);            // "true"/"false"
     StdLogosResult setWatchedSources(const std::string& newlineSeparated);
     StdLogosResult getWatchedSources();
-    StdLogosResult setChannelLabel(const std::string& label);
 
     // ── State ─────────────────────────────────────────────────────────────────
     StdLogosResult getStatus();
@@ -60,16 +58,8 @@ public:
     StdLogosResult recordManifest(const std::string& moduleName);
 
     // ── Finalization / explorer lookups ────────────────────────────────────────
-    StdLogosResult findAnchorTx(const std::string& nodeUrl, const std::string& channelId,
-                                int64_t slotFrom, int64_t slotTo);
-    StdLogosResult findExplorerTxHash(const std::string& channelId,
-                                      int64_t slotFrom, int64_t slotTo);
-    StdLogosResult getBlockForTx(const std::string& txHash, int64_t slotFrom);
     // v0.2 confirmation via /channel/{id} → {found, tipSlot, tipMessage} (beacon#43)
     StdLogosResult getChannelState(const std::string& channelId);
-
-    // ── Debug ──────────────────────────────────────────────────────────────────
-    StdLogosResult diagLog(const std::string& msg);
 
     // ── zone_sequencer bridge (v0.2 — replaces QML's direct callModule) ─────────
     /// Derive the 64-hex channel id for a signing key via modules().zone_sequencer.
@@ -89,15 +79,6 @@ public:
 
     std::string name() const { return "logos_beacon"; }
     std::string version() const { return "2.0.0"; }
-
-logos_events:
-    /// Emitted from confirmInscription so consumers can react to status changes.
-    /// NOTE: do NOT emit logos_events from inside an IPC-handler stack (e.g. seqPublish)
-    /// — it SIGSEGVs logos_beacon at return (beacon#50). This one is emitted from
-    /// confirmInscription, which QML drives directly; keep new event emits on that
-    /// same shallow path, or deliver results via the method's async reply instead.
-    void inscriptionConfirmed(int64_t entryIndex, const std::string& inscriptionId,
-                              const std::string& status);
 
 private:
     struct Impl;                     // Qt state (QSettings/QJson/QNetworkAccessManager)

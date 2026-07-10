@@ -15,7 +15,6 @@ class BeaconUi
     SLOT(QString setNodeUrl(QString url))
     SLOT(QString setWatchedSources(QString sources))
     SLOT(QString getWatchedSources())
-    SLOT(QString setChannelLabel(QString label))
     // universal keeper reach (callModule returns null for universal modules — beacon#46)
     SLOT(QString getKeeperInscriptionQueue())
     SLOT(QString markKeeperInscribed(QString cid))
@@ -44,7 +43,6 @@ class BeaconUi
     SLOT(QString recordManifest(QString moduleName))
 
     // ── Finalization / explorer lookups ─────────────────────────────────────
-    SLOT(QString findExplorerTxHash(QString channelId, int slotFrom, int slotTo))
     SLOT(QString getChannelState(QString channelId))
 
     // ── zone_sequencer bridge (forwarded through logos_beacon) ──────────────
