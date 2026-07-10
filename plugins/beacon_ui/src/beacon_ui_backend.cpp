@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QVariant>
+#include <QVariantList>
 
 #include "logos_sdk.h"   // generated: modules().logos_beacon (Qt-typed)
 
@@ -167,13 +168,44 @@ QString BeaconUiBackend::seqDeriveChannel(QString signingKeyHex)
     return resultToJson(modules().logos_beacon.seqDeriveChannel(signingKeyHex));
 }
 
-QString BeaconUiBackend::seqPublish(QString nodeUrl, QString channelId, QString signingKeyHex,
+QString BeaconUiBackend::seqPublish(int token, QString nodeUrl, QString channelId, QString signingKeyHex,
                                     QString checkpointPath, QString payload)
 {
     if (!isContextReady()) return "{\"error\":\"context not ready\"}";
-    return resultToJson(modules().logos_beacon.seqPublish(
-        nodeUrl, channelId, signingKeyHex,
-        checkpointPath, payload));
+    // FIRE-AND-FORGET (beacon#50) + LONG TIMEOUT. A fresh-channel publish on a long
+    // chain runs for minutes (zone_sequencer's 3×60s "sequencer ready" retry loop, #51).
+    //   1. Async so the sync call never parks the single-threaded ui-host loop.
+    //   2. Timeout MUST exceed the publish duration: the crash is logos_beacon SIGSEGV
+    //      when publish_to RETURNS (e.g. at 93s) and it replies into a request context
+    //      the framework already tore down at the DEFAULT 20s timeout (Timeout=20000ms).
+    //      logos_beacon's own modules().zone_sequencer.publish_to() sync call tolerates
+    //      the full duration — it is specifically this ui-host→core hop's 20s timeout
+    //      that frees the context early. A generous timeout keeps it alive until the
+    //      reply lands. (The headless zone-sequencer-rs harness never hits this because
+    //      it has no such timed IPC hop wrapping the publish — see beacon#50.)
+    // The result is delivered by logos_beacon's publishCompleted event (onContextReady)
+    // → seqPublishResult, correlated by `token`; the async reply is not relied on.
+    // Deliver the result from the ASYNC REPLY CALLBACK (beacon#50). The core must NOT
+    // emit a logos_events event to report the result — that SIGSEGVs logos_beacon at
+    // publish-return (proven by A/B). Instead we ride the normal reply, which now lands
+    // because the request context lives long enough (15 min) for the slow fresh-channel
+    // publish to return. The callback runs on the ui-host thread, so emitting the
+    // QtRO seqPublishResult signal from here is safe. `token` correlates it in QML.
+    // Bounds how long a pending publish request is held. Must exceed the slowest valid
+    // publish (fresh-channel 3×60s sequencer-ready retry ≈ 180s) with margin, but stay
+    // small enough that a crashed/never-returning publish frees the ui-side guard
+    // (pollBusy) promptly instead of freezing the pipeline (beacon#50 guard-recovery).
+    static constexpr int kPublishTimeoutMs = 240000;  // 4 min
+    modules().logos_beacon.seqPublishAsync(
+        token, nodeUrl, channelId, signingKeyHex, checkpointPath, payload,
+        [this, token](LogosResult r) { emit seqPublishResult(token, resultToJson(r)); },
+        Timeout(kPublishTimeoutMs));
+    return QStringLiteral("{\"ok\":true,\"token\":%1}").arg(token);
+}
+
+void BeaconUiBackend::onContextReady()
+{
+    setStatus(QStringLiteral("logos_beacon wired"));
 }
 
 QString BeaconUiBackend::ping()

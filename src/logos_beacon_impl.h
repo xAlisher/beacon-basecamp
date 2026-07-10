@@ -79,7 +79,11 @@ public:
     StdLogosResult getSourceChannel(const std::string& source);
     /// Stateless publish to a channel via modules().zone_sequencer.publish_to.
     /// Returns the inscription/tx id string. Runs the whole cross-module hop in C++.
-    StdLogosResult seqPublish(const std::string& nodeUrl, const std::string& channelId,
+    /// `token` correlates the async caller's request with the publishCompleted event
+    /// (the sync reply is unreliable on a long-running publish — beacon#50). The
+    /// return value is retained for callers that can use it, but the authoritative
+    /// result delivery is the publishCompleted event emitted when publish_to returns.
+    StdLogosResult seqPublish(int64_t token, const std::string& nodeUrl, const std::string& channelId,
                               const std::string& signingKeyHex, const std::string& checkpointPath,
                               const std::string& payload);
 
@@ -88,6 +92,10 @@ public:
 
 logos_events:
     /// Emitted from confirmInscription so consumers can react to status changes.
+    /// NOTE: do NOT emit logos_events from inside an IPC-handler stack (e.g. seqPublish)
+    /// — it SIGSEGVs logos_beacon at return (beacon#50). This one is emitted from
+    /// confirmInscription, which QML drives directly; keep new event emits on that
+    /// same shallow path, or deliver results via the method's async reply instead.
     void inscriptionConfirmed(int64_t entryIndex, const std::string& inscriptionId,
                               const std::string& status);
 

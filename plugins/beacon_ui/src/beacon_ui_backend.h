@@ -57,11 +57,13 @@ public:
 
     // ── zone_sequencer bridge (forwarded through logos_beacon) ────────────────
     QString seqDeriveChannel(QString signingKeyHex) override;
-    QString seqPublish(QString nodeUrl, QString channelId, QString signingKeyHex,
+    QString seqPublish(int token, QString nodeUrl, QString channelId, QString signingKeyHex,
                        QString checkpointPath, QString payload) override;
 
     QString ping() override;
 
 protected:
-    void onContextReady() override { setStatus(QStringLiteral("logos_beacon wired")); }
+    // Wire the logos_beacon publishCompleted event → re-emit as the QtRO
+    // seqPublishResult signal for QML (beacon#50: async publish result delivery).
+    void onContextReady() override;
 };

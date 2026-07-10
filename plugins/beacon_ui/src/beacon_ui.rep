@@ -51,7 +51,16 @@ class BeaconUi
     // Stateless channel derivation and publish — logos_beacon owns the
     // modules().zone_sequencer hop, so the whole publish path runs C++-side.
     SLOT(QString seqDeriveChannel(QString signingKeyHex))
-    SLOT(QString seqPublish(QString nodeUrl, QString channelId, QString signingKeyHex, QString checkpointPath, QString payload))
+    // seqPublish is FIRE-AND-FORGET (beacon#50): it kicks logos_beacon.seqPublishAsync
+    // and returns an ack immediately — it does NOT return the publish result (a fresh
+    // channel on a long chain can take minutes; a sync wait freezes the ui-host loop and
+    // SIGSEGVs). The result arrives asynchronously via the seqPublishResult signal,
+    // correlated by `token` (QML mints the token and matches it in the signal handler).
+    SLOT(QString seqPublish(int token, QString nodeUrl, QString channelId, QString signingKeyHex, QString checkpointPath, QString payload))
+
+    // Async publish result: `resultJson` is the bare tx-hash string on success or a
+    // {"error":"..."} JSON string on failure (same shape the old sync seqPublish returned).
+    SIGNAL(seqPublishResult(int token, QString resultJson))
 
     // Health probe.
     SLOT(QString ping())

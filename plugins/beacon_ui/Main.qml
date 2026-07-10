@@ -40,6 +40,7 @@ Item {
     property bool   settingsPanelOpen: false
 
     property bool   pollBusy:          false
+    property double pollBusySince:     0     // ms when pollBusy last went true (guard-recovery)
     property var    manifestedModules: ({})   // module name → true, loaded from manifest-log.json
     property int    inscribedCount:    0
     property string channelLabel:      "My Beacon"   // kept for future use
@@ -49,6 +50,42 @@ Item {
     property int  currentLibSlot:      0
     property var  pendingFinalizations: []
     property bool finalizationBusy:    false
+
+    // ── Async publish correlation (beacon#50) ─────────────────────────────────
+    // seqPublish is fire-and-forget: the backend returns an ack immediately and the
+    // real result arrives later via the seqPublishResult signal. We mint a monotonic
+    // token per publish, stash its onResult callback + submit time here, and dispatch
+    // by token when the signal fires. A watchdog fails out tokens that never resolve.
+    property int  pubTokenSeq:   0
+    property var  pubPending:    ({})    // token → { onResult: fn, submitTs: ms }
+    property int  pubTimeoutMs:  240000  // 4 min — matches backend kPublishTimeoutMs; a crashed
+                                         // publish frees pollBusy within this bound (guard-recovery)
+
+    // Fire a publish and resolve onResult(resultJson) exactly once — via the
+    // seqPublishResult signal, a transport failure, or the watchdog timeout.
+    function seqPublishAsync(nodeUrl, channelId, signingKeyHex, checkpointPath, payload, onResult) {
+        if (!root.beacon) { if (onResult) onResult(JSON.stringify({ error: "no backend" })); return }
+        var token = ++root.pubTokenSeq
+        var pend = {}
+        for (var k in root.pubPending) pend[k] = root.pubPending[k]
+        pend[token] = { onResult: onResult, submitTs: Date.now() }
+        root.pubPending = pend
+        publishWatchdog.start()
+        logos.watch(root.beacon.seqPublish(token, nodeUrl, channelId, signingKeyHex, checkpointPath, payload),
+            function () {},   // ack — the real result rides seqPublishResult
+            function (e) { root.resolvePublish(token, JSON.stringify({ error: "transport: " + e })) })
+    }
+
+    // Deliver a result to the token's callback and clear it (idempotent — the first
+    // of signal / transport-error / watchdog wins; later arrivals are dropped).
+    function resolvePublish(token, resultJson) {
+        var entry = root.pubPending[token]
+        if (!entry) return
+        var pend = {}
+        for (var k in root.pubPending) if (String(k) !== String(token)) pend[k] = root.pubPending[k]
+        root.pubPending = pend
+        if (entry.onResult) entry.onResult(resultJson)
+    }
 
     // Free-text inscribe runs deferred: the click clears the input, flips the
     // button to keycard-style dots and logs the request, THEN a short timer fires
@@ -248,10 +285,10 @@ Item {
             ts:         Math.floor(Date.now() / 1000)
         })
 
-        logos.watch(root.beacon.seqPublish(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload),
+        root.seqPublishAsync(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload,
             function (pubRaw) {
                 if (root.seqIsError(pubRaw)) {
-                    appendActivity("manifest error for " + name, "error")
+                    appendActivity("manifest error for " + name + ": " + root.seqError(pubRaw), "error")
                     return
                 }
                 logos.watch(root.beacon.recordManifest(name), function () {}, function () {})
@@ -260,9 +297,6 @@ Item {
                 updated[name] = true
                 root.manifestedModules = updated
                 appendActivity("manifested " + name + " channel — " + channelId.substring(0,16) + "…", "success")
-            },
-            function (e) {
-                appendActivity("manifest error for " + name + ": " + e, "error")
             })
     }
 
@@ -307,6 +341,7 @@ Item {
         if (root.pollBusy) { if (done) done(false); return }
         if (!root.beacon)  { if (done) done(false); return }
         root.pollBusy = true
+        root.pollBusySince = Date.now()
 
         // Capture node slot / lib_slot for slotFrom, libAtSubmit, and progress tracking
         logos.watch(root.beacon.getNodeInfo(), function (infoRaw) {
@@ -348,17 +383,24 @@ Item {
                         })
 
                         var pubStarted = Date.now()
-                        // seqPublish is stateless (carries channel + key + node url),
-                        // so primary and sub-channel publishes take the same path.
-                        logos.watch(root.beacon.seqPublish(root.nodeUrl, useChannelId, useKey, useCheckpoint, payload),
+                        // Honest in-flight state (#52): the publish is fire-and-forget now
+                        // (#50), so show "submitting" until the result arrives — not "submitted"
+                        // (which would claim the op landed) nor "finalising".
+                        var feedRowSub = feedRowFor(cid)
+                        if (feedRowSub >= 0)
+                            logModel.setProperty(feedRowSub, "status", "submitting")
+                        // seqPublishAsync is stateless (carries channel + key + node url), so
+                        // primary and sub-channel publishes take the same path. The result
+                        // (real tx hash, real failure, transport error, or a watchdog timeout)
+                        // is delivered once via the onResult callback.
+                        root.seqPublishAsync(root.nodeUrl, useChannelId, useKey, useCheckpoint, payload,
                             function (pubRaw) {
                                 var feedRow
                                 if (root.seqIsError(pubRaw)) {
-                                    // logos.watch delivers the ACTUAL backend result (not a
-                                    // client-side timeout), so an error here is a real publish
-                                    // failure — e.g. node unreachable → sequencer "timeout
-                                    // waiting for sequencer ready". Surface the reason instead
-                                    // of silently deferring to finalization.
+                                    // A real publish failure — node unreachable, sequencer
+                                    // "timeout waiting for sequencer ready", transport error, or
+                                    // the watchdog firing. Surface the reason and mark failed
+                                    // instead of silently deferring to finalization (#52).
                                     logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
                                     feedRow = feedRowFor(cid)
                                     if (feedRow >= 0)
@@ -399,14 +441,6 @@ Item {
                                 }
 
                                 finish(true)
-                            },
-                            function (e) {
-                                logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
-                                var fr = feedRowFor(cid)
-                                if (fr >= 0)
-                                    logModel.setProperty(fr, "status", "failed")
-                                appendActivity("[" + (source || "primary") + "] inscription error — " + e, "error")
-                                finish(false)
                             })
                     },
                     function (e) { appendActivity("error: pinCid " + e, "error"); finish(false) })
@@ -454,19 +488,30 @@ Item {
             ts:         Math.floor(Date.now() / 1000)
         })
 
-        logos.watch(root.beacon.seqPublish(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload),
+        root.seqPublishAsync(root.nodeUrl, root.channelId, root.signingKeyHex, "", payload,
             function (pubRaw) {
                 root.broadcastStatus = root.seqIsError(pubRaw) ? "error" : "ok"
-                root.pollBusy = false
-            },
-            function (e) {
-                root.broadcastStatus = "error"
                 root.pollBusy = false
             })
     }
 
     // ── Module inscription queue polling ─────────────────────────────────────
     function pollModules() {
+        // Guard-recovery backstop (beacon#50): if pollBusy has been stuck past the
+        // publish timeout with nothing actually pending (e.g. logos_beacon crashed
+        // mid-publish and the result never came), release it so keeper items resume
+        // instead of the queue wedging until a restart. The staleness window prevents
+        // racing a freshly-set pollBusy whose seqPublishAsync token isn't registered yet.
+        if (root.pollBusy && root.pollBusySince > 0
+                && (Date.now() - root.pollBusySince) > (root.pubTimeoutMs + 20000)) {
+            var pend = false
+            for (var pk in root.pubPending) { pend = true; break }
+            if (!pend) {
+                root.pollBusy = false
+                appendActivity("released a stuck inscribe guard after " +
+                    Math.round((Date.now() - root.pollBusySince) / 1000) + "s (beacon likely restarted)", "muted")
+            }
+        }
         if (root.pollBusy) return
         if (!root.keycardConnected) return
         if (typeof logos === "undefined") return
@@ -700,6 +745,49 @@ Item {
         }
     }
 
+    // beacon#50: the fire-and-forget seqPublish's result arrives here, correlated by
+    // token. Dispatch to the pending onResult callback registered in seqPublishAsync.
+    Connections {
+        target: root.beacon
+        ignoreUnknownSignals: true
+        function onSeqPublishResult(token, resultJson) {
+            root.resolvePublish(token, resultJson)
+        }
+    }
+
+    // Backstop for a publish whose result never arrives (e.g. logos_beacon died mid
+    // publish). Fails out any token older than pubTimeoutMs so the feed never sticks
+    // in "submitting" forever (beacon#50/#52). Stops itself when nothing is pending.
+    Timer {
+        id: publishWatchdog
+        interval: 15000
+        repeat: true
+        onTriggered: {
+            var now = Date.now()
+            var anyPending = false
+            var expired = []
+            for (var k in root.pubPending) {
+                var e = root.pubPending[k]
+                if (now - e.submitTs >= root.pubTimeoutMs) expired.push(k)
+                else anyPending = true
+            }
+            for (var i = 0; i < expired.length; i++)
+                root.resolvePublish(expired[i], JSON.stringify({ error: "publish timed out (no result after " +
+                    Math.round(root.pubTimeoutMs / 1000) + "s)" }))
+            // Guard-recovery (beacon#50): if a publish crashed logos_beacon mid-flight,
+            // its onResult never fires and pollBusy stays true, freezing all new
+            // inscriptions. Once nothing is genuinely pending, release the orphaned
+            // guard so the pipeline resumes instead of wedging until the next restart.
+            var stillPending = false
+            for (var k2 in root.pubPending) { stillPending = true; break }
+            if (!stillPending && root.pollBusy) {
+                root.pollBusy = false
+                appendActivity("recovered a stuck publish guard (no result — likely a beacon restart)", "muted")
+            }
+            if (!anyPending && expired.length === 0) publishWatchdog.stop()
+        }
+    }
+
     Component.onCompleted: {
         if (typeof logos === "undefined" || !logos.module) return
         if (root.beacon !== null && logos.isViewModuleReady("beacon_ui")) {
@@ -742,12 +830,11 @@ Item {
         if (!item.channelId || !item.useKey || !item.payload) return
         // Empty checkpoint path ⇒ bootstrap re-fetches the current /channel tip, so the
         // retry chains correctly (root for a fresh channel, real tip otherwise).
-        logos.watch(root.beacon.seqPublish(root.nodeUrl, item.channelId, item.useKey, "", item.payload),
+        root.seqPublishAsync(root.nodeUrl, item.channelId, item.useKey, "", item.payload,
             function (pubRaw) {
                 if (root.seqIsError(pubRaw))
                     appendActivity("re-inscribe error: " + root.seqError(pubRaw), "error")
-            },
-            function (e) {})
+            })
     }
 
     // ── Finalization + inclusion watchdog — /channel/{id}: pending→safe→finalized (#43/#44) ──
@@ -817,15 +904,16 @@ Item {
                                     }
                                     remaining.push(item)
                                 } else {
-                                    // NOT safe (pending / dropped) — #44 inclusion watchdog
+                                    // NOT safe (pending / dropped / channel not found) — #44 inclusion watchdog
                                     var age = (slotNow > 0 && item.slotFrom > 0) ? (slotNow - item.slotFrom) : 0
                                     if (age <= root.inclusionWindow) {
-                                        // still within the inclusion window — awaiting inclusion
-                                        if (fRow >= 0) {
-                                            var s2 = logModel.get(fRow).status
-                                            if (s2 === "submitted" || s2 === "queued")
-                                                logModel.setProperty(fRow, "status", "finalizing")
-                                        }
+                                        // Still within the inclusion window — awaiting inclusion.
+                                        // #52: do NOT promote to "finalizing" here — the op is not
+                                        // yet in a block (getChannelState returned not-safe / a fresh
+                                        // channel 404s), so "finalizing" would misrepresent a
+                                        // never-landed inscription as being finalised. Keep the honest
+                                        // "submitted" (awaiting inclusion) state; only genuine SAFE
+                                        // (above) advances to "finalizing".
                                         remaining.push(item)
                                     } else if ((item.retries || 0) < root.maxInclusionRetries) {
                                         // never went safe within the window → dropped from mempool.
@@ -1638,6 +1726,7 @@ Item {
                                     : ""
 
                                 property bool inFlight: status === "queued"
+                                                     || status === "submitting"
                                                      || status === "submitted"
                                                      || status === "finalizing"
                                 property bool isDone:   status === "confirmed" || status === "ok"

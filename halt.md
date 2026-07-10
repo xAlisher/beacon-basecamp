@@ -1,40 +1,54 @@
-# Halt — 2026-07-10
-
-## ▶ Resume this session
-```bash
-cd ~/basecamp/modules/beacon-basecamp && claude --resume 1e8dfb1b-c6d0-4a34-94ee-d7d6726332e9
-```
-Fallback: `claude --continue`.
+# Halt — 2026-07-10 (beacon#50 publish-crash session)
 
 ## Where we stopped
-Diagnosed a stuck keeper inscription in beacon ("Vanishing Privacy") — filed two **high-priority** bugs.
-Beacon is on `main`; no code changes this session (diagnosis only).
+Long live-repro session on the fresh-channel publish crash (#50). **The product loop is proven
+working end-to-end**; the crash is a separate, deeper native bug that's now correctly diagnosed
+(not fixed); the crash→freeze **cascade IS fixed** (#53) and built, not yet installed/committed.
 
-## 🔴 High priority (both `priority:high`)
-1. **#50 — fresh-channel bootstrap stall** (functional). A keeper inscription to the fresh keeper channel
-   `dcab09a0…` never lands: `status: submitted`, **empty `inscriptionId`**, `GET /channel/dcab09a0…` = 500
-   "channel not found" on Paradox. Node LIB advancing (not a lag). The GUI beacon's **sync `seqPublish`**
-   stalls "waiting for sequencer ready" on a long chain (~874k slots). Fix = LIB-pinned bootstrap (like our
-   headless `zone-sequencer-rs` harness, which bootstraps fresh channels fine — that's how `7ec988ab` landed)
-   and/or make the call async. Master channel `3a9d3849…` IS bootstrapped and works — only the fresh keeper
-   channel stalls.
-2. **#52 — misleading state** (UI/correctness). Beacon shows **"finalising"** for that failed inscription
-   (empty `inscriptionId`, channel not on-chain). `confirmInscription` (`src/logos_beacon_impl.cpp:226`)
-   stores whatever status the caller passes without reconciling. Fix: empty `inscriptionId` → `failed`;
-   verify `GET /channel/{id}` 200+tip before advancing to `finalising`; feed non-inclusion into #44.
+## Branch & build state
+- Branch: **fix/beacon-50-logos-publish-segv** (NOT main — halt at session start was stale)
+- **Uncommitted** working-tree changes (both modules build clean, qmllint 0 errors):
+  - `src/logos_beacon_impl.{h,cpp}` — seqPublish reverted to a plain `return publish_to(...)`
+    (removed the in-handler `publishCompleted` event emit — it was a red herring; core ≈ original)
+  - `plugins/beacon_ui/src/beacon_ui.rep` — `seqPublish(int token,…)` + `SIGNAL seqPublishResult`
+  - `plugins/beacon_ui/src/beacon_ui_backend.{h,cpp}` — async fire-and-forget `seqPublishAsync`,
+    result delivered via the **async reply callback** (not an event), `kPublishTimeoutMs = 240000`
+  - `plugins/beacon_ui/Main.qml` — token-correlated delivery, honest "submitting" state, #52
+    finalising-mislabel fix, **guard-recovery** (pubTimeoutMs 240s, watchdog orphan release,
+    pollBusySince backstop in pollModules)
+- Latest builds staged in scratchpad: `scratchpad/beacon-core`, `scratchpad/beacon-ui`
+  (build beacon_ui with `--override-input logos_beacon path:/home/alisher/basecamp/modules/beacon-basecamp`)
 
-## Current state
-- Branch: **main** · Build: passing (no changes this session)
-- Gateway (`[beacon] nodeUrl`): `https://logos-testnet.paradox.computer` (a proposing node — correct)
-- Related open: #51 (rc5 sequencer spike — resolves #50 upstream), #44 (self-healing detect+retry), #27 (fake inscriptionId)
+## ✅ Proven working (don't re-litigate)
+Keeper auto-preserve → download → Logos Storage (real CIDs) → on-chain inscription →
+`confirmed` @ slot 428365 → proof link `explorer.logos.live/#3a9d3849…`, **automatically**.
+Node verified: `GET https://logos-testnet.paradox.computer/channel/3a9d3849…` → 200, real tip.
+**Crash is post-success → no data loss.** A restart reconciles stuck "submitted" → confirmed.
+
+## 🔴 #50 — the crash (diagnosed, NOT fixed — needs symbolization)
+Intermittent native SIGSEGV in `logos_beacon` **at the instant `zone_sequencer.publish_to` returns
+a successful inscription_id**. Channel-agnostic (crashes on bootstrapped master too), correlates
+with SLOW publishes, pre-existing. **3 disproven theories** (all in the #50 comment): sync-loop-park,
+20s-timeout-teardown, in-handler-emit. Next: **symbolize** — `ps -ef|grep logos_host.elf|grep -w
+logos_beacon|grep -v bash` (pgrep matches your own shell!), capture `/proc/PID/maps` while alive,
+subtract base from the raw backtrace addrs, `addr2line -e logos_beacon_plugin.so` (.so has .symtab).
+Likely liblogos/zone_sequencer reply-serialization, not beacon-QML-fixable.
+
+## 🟡 #53 — crash freezes pipeline (FIXED, built, not installed/committed)
+Guard-recovery bounds the freeze to ~4min (was 15min/never). See #53 for the 4 changes.
 
 ## Next steps (in order)
-1. **#50** — LIB-pinned / async fresh-channel publish (or land one op on `dcab09a0…` headlessly to bootstrap it — needs the keeper key = `SHA256(master+"keeper")`, keycard-only → a keycard tap).
-2. **#52** — fix the status reconciliation (don't show `finalising` without an `inscriptionId` + on-chain tip).
-3. Consider #51 (rc5) as the upstream fix for #50.
+1. **Install + smoke-test** the guard-recovery build (kill all → copy core+ui → clear qmlcache →
+   relaunch to /tmp/basecamp.log). Confirm a keeper item after a crash resumes within ~4min.
+2. **Commit** the branch (guard-recovery + async freeze-fix + #52 mislabel). Ask before push.
+3. **#50 symbolization** — the real crash fix path (separate, deeper).
+4. Optional: explorer deep-link to the specific inscription (`#<channel>/<msgId>`) — small UI issue.
 
 ## Context that's hard to re-derive
-- **No data loss** on the stuck item: content IS pinned to Logos Storage (real CIDs `zDvZ…` in the inscription label) — only the on-chain pointer failed.
-- Our **headless harness handles fresh-channel bootstrap** by pinning to current LIB (skips genesis backfill); the GUI beacon does NOT — that's the core of #50.
-- keeper channel `dcab09a0…` = `pubkey(SHA256(masterKey+"keeper"))`; master is keycard-only/in-memory (can't extract headlessly — OS ptrace_scope=1 + safety guard).
-- Paradox's `clock`-tx accumulation tip (LORE Discord thread): fresh-channel timeout scales with chain length; rc5 fix = `block_create_timeout: 60s`. Relevant only after moving off our custom zone-sequencer-rs.
+- logos_beacon & keeper & zone_sequencer each run as SEPARATE `.logos_host.elf --name X` processes;
+  beacon_ui is `.ui-host.elf --name beacon_ui`. A core crash does NOT crash beacon_ui (why guards stick).
+- GUI-launched Basecamp (gnome-shell parent) logs to the **systemd journal**, not /tmp/basecamp.log.
+  Use `journalctl --user`. My own launches (`> /tmp/basecamp.log`) log to the file.
+- Ghost-state to clear for a clean slate (backed up in scratchpad/ghost-clean-backup):
+  `module_data/logos_beacon/inscription-log.json`, `module_data/keeper/*/keeper-*.json`, `/tmp/keeper-*`.
+- ia-basecamp (archiver) issues filed this session: #47 (remove races auto-preserve), #48 (auto-state visibility).

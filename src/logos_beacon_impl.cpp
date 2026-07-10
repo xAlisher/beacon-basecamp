@@ -461,12 +461,24 @@ StdLogosResult LogosBeaconImpl::getSourceChannel(const std::string& source)
     if (keyHex.empty()) return {false, {}, "no signing key"};
     return modules().zone_sequencer.derive_channel_id(keyHex);
 }
-StdLogosResult LogosBeaconImpl::seqPublish(const std::string& nodeUrl, const std::string& channelId,
+StdLogosResult LogosBeaconImpl::seqPublish(int64_t token, const std::string& nodeUrl, const std::string& channelId,
                                            const std::string& signingKeyHex, const std::string& checkpointPath,
                                            const std::string& payload)
 {
     // modules() reaches the one persistent zone_sequencer host, so node_url set
     // here is visible to publish_to. Stateless publish_to carries channel+key.
+    // A fresh-channel publish on a long chain can block here for minutes; the
+    // ui-host backend calls this via seqPublishAsync fire-and-forget, so blocking
+    // this core handler is safe (it does not park the ui-host loop). The result is
+    // delivered by the publishCompleted event — NOT the sync reply, which the async
+    // caller does not (and must not) wait on (beacon#50).
     modules().zone_sequencer.set_node_url(nodeUrl);
+    // NOTE (beacon#50): do NOT emit a logos_events event (e.g. publishCompleted) from
+    // inside this IPC-handler stack — doing so SIGSEGVs logos_beacon at publish-return
+    // (proven by A/B: same slow publish returns cleanly with the emit removed). The
+    // result is delivered to QML from beacon_ui's async reply callback instead, which
+    // is safe now that the request context lives long enough (Timeout=15min) for the
+    // reply to land. `token` is unused core-side (correlation happens in beacon_ui).
+    (void)token;
     return modules().zone_sequencer.publish_to(channelId, signingKeyHex, checkpointPath, payload);
 }
