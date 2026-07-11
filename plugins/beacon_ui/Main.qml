@@ -373,6 +373,38 @@ Item {
             function (e) { if (done) done(null) })
     }
 
+    // Per-item channels: each inscription gets its OWN channel, derived deterministically
+    // from (source|"primary") + ":" + cid. Every item is then a channel's FIRST inscription
+    // (parent = root), which lands reliably — sidestepping the channel-extension problem
+    // (2nd+ item on a shared channel doesn't land with the stateless sequencer). The link
+    // for an item is just its own channel (#<item-channel>), which opens showing that item.
+    property var itemChannels: ({})     // cid → channelId
+    function itemKeyName(source, cid) { return (source && source.length > 0 ? source : "primary") + ":" + cid }
+    function setupItemChannel(source, cid, done) {
+        if (!root.beacon) { if (done) done(null); return }
+        // Always derive the key (needed to publish) + channel; derivation is a cheap local
+        // computation now. The itemChannels cache is a side-effect so channelForRow can read
+        // the channel synchronously in the row binding.
+        logos.watch(root.beacon.deriveModuleSigningKey(root.itemKeyName(source, cid)),
+            function (raw) {
+                var r = callModuleParse(raw)
+                if (!r || !r.signingKey) { if (done) done(null); return }
+                var sk = r.signingKey
+                logos.watch(root.beacon.seqDeriveChannel(sk),
+                    function (chRaw) {
+                        var channelId = root.seqResult(chRaw)
+                        if (channelId.length === 0) { if (done) done(null); return }
+                        var upd = {}
+                        for (var k in root.itemChannels) upd[k] = root.itemChannels[k]
+                        upd[cid] = channelId
+                        root.itemChannels = upd
+                        if (done) done({ signingKey: sk, channelId: channelId })
+                    },
+                    function (e) { if (done) done(null) })
+            },
+            function (e) { if (done) done(null) })
+    }
+
     // ── Inscription flow ──────────────────────────────────────────────────────
     // rawPayload (optional): publish this exact string instead of a cid_pin JSON —
     // the free-text inscribe path for preparing test/campaign channels (#25)
@@ -440,22 +472,37 @@ Item {
                             function (pubRaw) {
                                 var feedRow
                                 if (root.seqIsError(pubRaw)) {
-                                    // A real publish failure — node unreachable, sequencer
-                                    // "timeout waiting for sequencer ready", transport error, or
-                                    // the watchdog firing. Surface the reason and mark failed
-                                    // instead of silently deferring to finalization (#52).
-                                    logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
-                                    feedRow = feedRowFor(cid)
-                                    if (feedRow >= 0)
-                                        logModel.setProperty(feedRow, "status", "failed")
                                     var em = root.seqError(pubRaw)
                                     var syncing = em.toLowerCase().indexOf("not ready") >= 0
                                                || em.toLowerCase().indexOf("no result") >= 0
                                                || em.toLowerCase().indexOf("timed out") >= 0
-                                    // syncing = transient (yellow, "waiting"); a real failure = red.
-                                    appendActivity("[" + (source || "primary") + "] "
-                                        + (syncing ? "waiting for sequencer — " : "publish failed: ") + em,
-                                        syncing ? "warn" : "error")
+                                    if (syncing) {
+                                        // NOT a failure — the sequencer was mid-cold-start, so we got no
+                                        // result. But the publish MAY still have landed (verified: items
+                                        // marked "failed" here were actually on-chain). Mark 'waiting' and
+                                        // hand it to the finalization loop, which confirms from the CHANNEL
+                                        // TIP (chain truth) — and re-publishes via the inclusion-watchdog if
+                                        // it genuinely didn't land. Never false-FAIL a cold-start publish.
+                                        logos.watch(root.beacon.confirmInscription(entryIndex, "", "waiting"), function () {}, function () {})
+                                        feedRow = feedRowFor(cid)
+                                        if (feedRow >= 0)
+                                            logModel.setProperty(feedRow, "status", "waiting")
+                                        var wf = root.pendingFinalizations.slice()
+                                        wf.push({ entryIndex: entryIndex, channelId: useChannelId,
+                                                  slotFrom: nodeSlot, libAtSubmit: libSlot, cid: cid,
+                                                  inscriptionId: "", useKey: useKey, payload: payload,
+                                                  source: source || "", retries: 0 })
+                                        root.pendingFinalizations = wf
+                                        appendActivity("[" + (source || "primary") + "] waiting for sequencer — "
+                                            + "will confirm from chain if it lands", "warn")
+                                        finish(false); return
+                                    }
+                                    // Genuine failure — node unreachable, transport error, etc.
+                                    logos.watch(root.beacon.confirmInscription(entryIndex, "", "failed"), function () {}, function () {})
+                                    feedRow = feedRowFor(cid)
+                                    if (feedRow >= 0)
+                                        logModel.setProperty(feedRow, "status", "failed")
+                                    appendActivity("[" + (source || "primary") + "] publish failed: " + em, "error")
                                     finish(false); return
                                 }
 
@@ -505,18 +552,15 @@ Item {
                     function (e) { appendActivity("error: pinCid " + e, "error"); finish(false) })
             }
 
-            if (source && source.length > 0) {
-                setupModuleChannel(source, function (mc) {
-                    if (mc) {
-                        afterChannel(mc.signingKey, mc.channelId)
-                    } else {
-                        appendActivity("using primary channel for " + source, "info")
-                        afterChannel(root.signingKeyHex, root.channelId)
-                    }
-                })
-            } else {
-                afterChannel(root.signingKeyHex, root.channelId)
-            }
+            // Every item → its OWN per-item channel (first inscription → lands reliably).
+            setupItemChannel(source, cid, function (mc) {
+                if (mc && mc.signingKey && mc.channelId) {
+                    afterChannel(mc.signingKey, mc.channelId)
+                } else {
+                    appendActivity("channel derive failed for " + cid.substring(0,16) + "… — using primary", "warn")
+                    afterChannel(root.signingKeyHex, root.channelId)
+                }
+            })
         }, function (e) { appendActivity("error: getNodeInfo " + e, "error"); finish(false) })
     }
 
@@ -624,6 +668,10 @@ Item {
                 var e  = entries[i]
                 var cid = e.cid || ""
                 seen[cid] = true
+                // Re-derive this item's own channel (once) so its link resolves after a reload.
+                // Deterministic from (source|"primary")+":"+cid, so no persistence needed.
+                if (cid.length > 0 && !root.itemChannels[cid])
+                    root.setupItemChannel(e.source || "", cid, function () {})
                 var row = feedRowFor(cid)
                 if (row < 0) {
                     logModel.append(feedEntryRow(cid, e.label || "", e.source || "",
@@ -867,6 +915,9 @@ Item {
     // ── #44 inclusion watchdog: config + re-inscribe helper ─────────────────────
     property int inclusionWindow:     120   // node slots (~2 min); not `safe` past this ⇒ dropped
     property int maxInclusionRetries: 4
+    // Per-item channels publish ONCE (parent=root) and just wait to land — no republish.
+    // Generous slots to be included before giving up (inclusion is ~1-2 blocks; this is ample).
+    property int inclusionTimeout:    600
     function republishItem(item) {
         if (!root.beacon) return
         // restored (pre-#44) items lack the key/payload → can't re-inscribe; skip quietly
@@ -962,35 +1013,20 @@ Item {
                                     }
                                     remaining.push(item)
                                 } else {
-                                    // NOT included — the item's own op has not landed (channel not found,
-                                    // OR found but its tip is still behind this item's submit slot, i.e.
-                                    // the op didn't include). #44 inclusion watchdog: wait, then retry/fail.
+                                    // NOT included yet — the op hasn't landed on this item's own channel.
+                                    // NEVER republish: each per-item channel is published ONCE (parent=root);
+                                    // re-inscribing before it lands builds phantom successors on an unlanded
+                                    // local message (nothing lands) AND hogs the sequencer so new items hit
+                                    // "not ready". Just keep re-checking the chain until the tip appears
+                                    // (confirmed above), or fail once after a generous timeout.
                                     var age = (slotNow > 0 && item.slotFrom > 0) ? (slotNow - item.slotFrom) : 0
-                                    if (age <= root.inclusionWindow) {
-                                        // Still within the inclusion window — awaiting inclusion.
-                                        // #52: do NOT promote to "finalizing" here — the op is not
-                                        // yet in a block (getChannelState returned not-safe / a fresh
-                                        // channel 404s), so "finalizing" would misrepresent a
-                                        // never-landed inscription as being finalised. Keep the honest
-                                        // "submitted" (awaiting inclusion) state; only genuine SAFE
-                                        // (above) advances to "finalizing".
-                                        remaining.push(item)
-                                    } else if ((item.retries || 0) < root.maxInclusionRetries) {
-                                        // never went safe within the window → dropped from mempool.
-                                        // re-inscribe (bootstrap re-fetches the current tip).
-                                        item.retries  = (item.retries || 0) + 1
-                                        item.slotFrom = slotNow            // fresh window for this attempt
-                                        appendActivity("⚠ not included after ~" + root.inclusionWindow +
-                                            " slots — re-inscribing " + item.cid.substring(0, 16) + "… (retry " +
-                                            item.retries + "/" + root.maxInclusionRetries + ")", "info")
-                                        root.republishItem(item)
-                                        remaining.push(item)
+                                    if (age <= root.inclusionTimeout) {
+                                        remaining.push(item)               // keep waiting + rechecking (no republish)
                                     } else {
-                                        // gave up after N retries
                                         logos.watch(root.beacon.confirmInscription(item.entryIndex, "", "failed"), function () {}, function () {})
                                         if (fRow >= 0) logModel.setProperty(fRow, "status", "failed")
-                                        appendActivity("✗ failed — not included after " + root.maxInclusionRetries +
-                                            " retries: " + item.cid.substring(0, 16) + "…", "error")
+                                        appendActivity("✗ not included after ~" + root.inclusionTimeout +
+                                            " slots: " + item.cid.substring(0, 16) + "…", "error")
                                         // drop
                                     }
                                 }
@@ -1212,9 +1248,9 @@ Item {
                         : root.seqStatus === "notready" ? "sequencer syncing — wait"
                         :                                 "sequencer warming up…"
                     radius: Theme.spacing.radiusPill
-                    color: root.seqStatus === "ready"    ? Theme.palette.success
-                         : root.seqStatus === "notready" ? Theme.palette.error
-                         :                                  Theme.palette.warning
+                    // 'syncing'/'warming' are transient waits (amber) — not errors (red).
+                    color: root.seqStatus === "ready" ? Theme.palette.success
+                         :                              Theme.palette.warning
                 }
 
                 // Status pill
@@ -1790,9 +1826,12 @@ Item {
 
                                 // The channel this inscription landed on — per-module for keeper/stash
                                 // (derive_channel_id(SHA256(key+source))), else the primary channel.
+                                // Per-ITEM channel: each inscription lives on its own channel
+                                // (root.itemChannels[cid]), so its link opens showing just this item.
+                                // Falls back to the primary channel until derived (or for free-text).
                                 property string channelForRow:
-                                    (source && root.moduleChannels[source] && root.moduleChannels[source].channelId)
-                                    ? root.moduleChannels[source].channelId
+                                    (root.itemChannels[cid] && root.itemChannels[cid].length > 0)
+                                    ? root.itemChannels[cid]
                                     : root.channelId
                                 // Per-item inscription deep-link. Keyed by the item's CID — that IS
                                 // "what was inscribed" (the cid_pin payload's `cid`), and it is the field
@@ -1815,6 +1854,7 @@ Item {
                                 property bool inFlight: status === "queued"
                                                      || status === "submitting"
                                                      || status === "submitted"
+                                                     || status === "waiting"
                                                      || status === "finalizing"
                                 // Progress begins ONLY after a successful publish (the op landed
                                 // in the mempool with a real id) — not while queued/submitting.
