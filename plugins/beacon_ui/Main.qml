@@ -36,6 +36,16 @@ Item {
     property bool   watchStash:        true   // always on; no UI toggle
     property var    watchedSources:    []  // per-source whitelist for stash auto-inscription
     property bool   zoneSeqReady:      false
+    // TRUE publish-readiness of the zone_sequencer, derived from ACTUAL publish outcomes.
+    // The old "ready" badge went green the instant the channel was derived — now a LOCAL
+    // Ed25519 computation, so it was always instantly true and said nothing about whether
+    // the sequencer had cold-started/synced enough to accept a publish (after a restart it
+    // needs ~1 min; publishing before then returns None → "returned no result"). Values:
+    //   "unknown"  — before config
+    //   "warming"  — configured but not yet confirmed (just restarted → still syncing)
+    //   "ready"    — a publish landed on-chain (sequencer confirmed live)
+    //   "notready" — a publish timed out waiting for sequencer ready (syncing — retry shortly)
+    property string seqStatus:         "unknown"
     property bool   settingsPanelOpen: false
 
     property bool   pollBusy:          false
@@ -81,7 +91,28 @@ Item {
         var pend = {}
         for (var k in root.pubPending) if (String(k) !== String(token)) pend[k] = root.pubPending[k]
         root.pubPending = pend
+        root.noteSeqStatus(resultJson)          // every publish outcome updates the TRUE status
         if (entry.onResult) entry.onResult(resultJson)
+    }
+
+    // Update the true sequencer status from an actual publish outcome and — on a state
+    // CHANGE only (no spam) — surface it in the activity log so the user knows when it is
+    // genuinely safe to inscribe. A landed publish ⇒ ready; a None/timeout ⇒ still syncing.
+    function noteSeqStatus(resultJson) {
+        if (!root.seqIsError(resultJson)) {
+            if (root.seqStatus !== "ready")
+                appendActivity("✓ sequencer ready — inscriptions are landing on-chain", "success")
+            root.seqStatus = "ready"
+            return
+        }
+        var msg = String(root.seqError(resultJson)).toLowerCase()
+        // None / timeout / "no result" ⇒ the sequencer is still cold-starting, not a hard error.
+        if (msg.indexOf("not ready") >= 0 || msg.indexOf("no result") >= 0
+            || msg.indexOf("timed out") >= 0 || msg.indexOf("timeout") >= 0 || msg === "") {
+            if (root.seqStatus !== "notready")
+                appendActivity("⚠ sequencer not ready — still syncing after start; wait ~1 min, then inscribe again", "warn")
+            root.seqStatus = "notready"
+        }
     }
 
     // Free-text inscribe runs deferred: the click clears the input, flips the
@@ -162,8 +193,14 @@ Item {
         var s = String(raw)
         if (s.length === 0) return ""
         var p = callModuleParse(raw)                       // null for a bare hex string
-        if (p && typeof p === 'object' && p.error) return ""
+        // ANY object result is a non-success: a real publish returns a bare tx-hash STRING.
+        // Check for the 'error' KEY, not its truthiness — a None publish surfaces as
+        // {"error":""} (empty message when zone_publish returns None / sequencer not ready),
+        // which p.error-truthiness silently passed through as a fake tx hash (item stuck
+        // 'submitted' with id '{"error":""}' instead of honestly 'failed').
+        if (p && typeof p === 'object') return ""
         if (s.toLowerCase().indexOf("error") === 0) return ""
+        if (s.charAt(0) === '{') return ""                 // stray JSON object → not a hash
         return s
     }
     function seqIsError(raw) { return seqResult(raw).length === 0 }
@@ -172,7 +209,10 @@ Item {
     // string) so failures are surfaced to the user, not swallowed.
     function seqError(raw) {
         var p = callModuleParse(raw)
-        if (p && typeof p === 'object' && p.error) return String(p.error)
+        if (p && typeof p === 'object' && ('error' in p)) {
+            var m = String(p.error)
+            return m.length ? m : "publish returned no result — sequencer not ready (retry when synced)"
+        }
         var s = String(raw === undefined || raw === null ? "" : raw)
         return s.length ? s : "unknown error"
     }
@@ -252,7 +292,13 @@ Item {
                 var ch = root.seqResult(chRaw)
                 if (ch.length > 0) {
                     root.channelId    = ch
-                    root.zoneSeqReady = true
+                    root.zoneSeqReady = true          // channel configured (module wired)
+                    // …but publish-readiness is unconfirmed until a publish actually lands.
+                    // Don't claim "ready" here (channel derivation is a local computation).
+                    if (root.seqStatus === "unknown" || root.seqStatus === "notready") {
+                        root.seqStatus = "warming"
+                        appendActivity("sequencer warming up — after a restart it needs ~1 min to sync before it can inscribe; the first publish confirms readiness", "muted")
+                    }
                     if (done) done(true)
                 } else {
                     appendActivity("zone sequencer configure failed: " + chRaw, "error")
@@ -402,7 +448,14 @@ Item {
                                     feedRow = feedRowFor(cid)
                                     if (feedRow >= 0)
                                         logModel.setProperty(feedRow, "status", "failed")
-                                    appendActivity("[" + (source || "primary") + "] publish failed: " + root.seqError(pubRaw), "error")
+                                    var em = root.seqError(pubRaw)
+                                    var syncing = em.toLowerCase().indexOf("not ready") >= 0
+                                               || em.toLowerCase().indexOf("no result") >= 0
+                                               || em.toLowerCase().indexOf("timed out") >= 0
+                                    // syncing = transient (yellow, "waiting"); a real failure = red.
+                                    appendActivity("[" + (source || "primary") + "] "
+                                        + (syncing ? "waiting for sequencer — " : "publish failed: ") + em,
+                                        syncing ? "warn" : "error")
                                     finish(false); return
                                 }
 
@@ -509,6 +562,12 @@ Item {
             for (var j = 0; j < queue.length; j++) {
                 var entry = queue[j]
                 if (!entry || !entry.cid) continue
+                // NO AUTO-RETRY: an item already in the feed (attempted this session or
+                // loaded from the persisted log) is never re-inscribed on the 10s poll —
+                // one attempt per item. A failed item stays visibly 'failed' instead of
+                // being silently re-queued every tick (which spammed the feed and kept
+                // hijacking the sequencer). Re-attempts are user-driven, not timed.
+                if (root.feedRowFor(entry.cid) >= 0) continue
                 pending.push({ moduleName: moduleName, cid: entry.cid, label: entry.label || entry.cid })
             }
         }
@@ -1145,11 +1204,24 @@ Item {
                     }
                 }
 
+                // Sequencer status pill — the TRUE publish-readiness (not the old instant-green
+                // channel-derivation flag), so the user knows when it is safe to inscribe.
+                LogosBadge {
+                    visible: root.seqStatus !== "unknown"
+                    text: root.seqStatus === "ready"    ? "sequencer ready"
+                        : root.seqStatus === "notready" ? "sequencer syncing — wait"
+                        :                                 "sequencer warming up…"
+                    radius: Theme.spacing.radiusPill
+                    color: root.seqStatus === "ready"    ? Theme.palette.success
+                         : root.seqStatus === "notready" ? Theme.palette.error
+                         :                                  Theme.palette.warning
+                }
+
                 // Status pill
                 LogosBadge {
                     text: root.inscribedCount + " inscribed"
                     radius: Theme.spacing.radiusPill
-                    color: root.zoneSeqReady ? Theme.palette.success : Theme.palette.error
+                    color: Theme.palette.textMuted
                 }
 
                 // Gear button — settings toggle
@@ -1663,6 +1735,7 @@ Item {
                                     radius: Theme.spacing.radiusSmall
                                     color: logEntry.rowType === "activity"
                                         ? (logEntry.level === "success" ? Theme.palette.success
+                                         : logEntry.level === "warn"    ? Theme.palette.warning
                                          : logEntry.level === "error"   ? Theme.palette.error
                                          : logEntry.level === "muted"   ? Theme.palette.textSecondary
                                          : Theme.palette.info)
@@ -1681,6 +1754,7 @@ Item {
                                               topMargin: Theme.spacing.tiny }
                                     text: "[" + logEntry.tsStr + "] " + logEntry.msg
                                     color: logEntry.level === "success" ? Theme.palette.success
+                                         : logEntry.level === "warn"    ? Theme.palette.warning
                                          : logEntry.level === "error"   ? Theme.palette.error
                                          : logEntry.level === "muted"   ? Theme.palette.textMuted
                                          : Theme.palette.textSecondary
@@ -1742,6 +1816,12 @@ Item {
                                                      || status === "submitting"
                                                      || status === "submitted"
                                                      || status === "finalizing"
+                                // Progress begins ONLY after a successful publish (the op landed
+                                // in the mempool with a real id) — not while queued/submitting.
+                                // A pre-publish item shows no progress bar, so a failing publish
+                                // never fakes forward motion.
+                                property bool postPublish: status === "submitted"
+                                                        || status === "finalizing"
                                 property bool isDone:   status === "confirmed"
                                 property bool isFailed: status === "failed"
                                 // lib has caught up to the submit slot but the explorer scan hasn't
@@ -1807,9 +1887,10 @@ Item {
                                             color: Theme.palette.textMuted
                                         }
 
-                                        // Progress bar (in-flight only)
+                                        // Progress bar — only after a successful publish (postPublish),
+                                        // never while queued/submitting (no fake progress on failures).
                                         Rectangle {
-                                            visible: logEntry.inFlight
+                                            visible: logEntry.postPublish
                                             Layout.fillWidth: true
                                             height: 4; radius: Theme.spacing.radiusSmall
                                             color: Theme.palette.backgroundSecondary
@@ -1825,7 +1906,7 @@ Item {
                                         // Time estimate while lib catches up; then "confirming…"
                                         // until the explorer scan returns the tx hash (status → confirmed).
                                         LogosText {
-                                            visible: logEntry.inFlight
+                                            visible: logEntry.postPublish
                                                      && (logEntry.timeEst.length > 0 || logEntry.confirming)
                                             text: logEntry.confirming ? "confirming…" : logEntry.timeEst
                                             font.pixelSize: Theme.typography.secondaryText

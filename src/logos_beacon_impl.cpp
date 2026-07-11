@@ -393,5 +393,19 @@ StdLogosResult LogosBeaconImpl::seqPublish(int64_t token, const std::string& nod
     // is safe now that the request context lives long enough (Timeout=15min) for the
     // reply to land. `token` is unused core-side (correlation happens in beacon_ui).
     (void)token;
-    return modules().zone_sequencer.publish_to(channelId, signingKeyHex, checkpointPath, payload);
+    // INCLUSION FIX (proven headlessly): give the stateless publish a PERSISTENT
+    // per-channel checkpoint. With an empty path the sequencer has no parent-chain
+    // continuity and its inscription never lands on-chain (the tip never advances,
+    // even for a fresh channel). With a per-channel checkpoint file — and the ui-side
+    // inclusion-watchdog resubmitting each block until included — the tip advances
+    // (verified: a fresh channel landed via zone_publish + checkpoint + resubmit, while
+    // the same fresh channel with checkpoint="" never landed). The proven method the
+    // dweb-inscribe-monitor used is exactly this: zone_publish with a stable checkpoint.
+    std::string ckpt = checkpointPath;
+    if (ckpt.empty() && !channelId.empty() && !d->m_persistencePath.isEmpty()) {
+        d->ensureCheckpointsDir();                       // idempotent mkpath
+        ckpt = (d->m_persistencePath + QStringLiteral("/checkpoints/")).toStdString()
+             + channelId + ".ckpt";
+    }
+    return modules().zone_sequencer.publish_to(channelId, signingKeyHex, ckpt, payload);
 }
