@@ -59,6 +59,34 @@ With an empty or missing checkpoint, it bootstraps to current LIB (~5s).
 For one-shot scripts: always pass empty checkpoint to avoid backfill deadlock.
 For the long-running beacon service: the checkpoint is correct behavior.
 
+### Reliable landing = ONE CHANNEL PER ITEM (2026-07-11, verified live) ⭐
+
+The stateless `zone_publish`/`publish_to` path reliably lands only a channel's **FIRST**
+op (parent = root, ~18s). **Extending** a channel (2nd+ op) silently never lands — the
+publish returns an `inscription_id` but the tip freezes, because the per-call sequencer
+can't observe its prior op land (flaky block stream) so it parents off a local msg that
+isn't on-chain → `InvalidParent`. Fix (commit `d39456a`): derive a channel per item from
+`(source|"primary")+":"+cid` (`setupItemChannel` in Main.qml) — every item is a first op.
+Verified: dcab09a0, bd377a67, 92b7eddd all landed on their own channels; the shared/aged
+keeper channel `3a9d3849` never did. Per-item link = `explorer.logos.live/#<item-channel>`.
+
+Two rules that MUST accompany per-item channels:
+- **Never re-inscribe (no watchdog republish).** Re-submitting before an op lands builds
+  phantom successors on an unlanded local `last_msg_id` (never on-chain) AND hogs the
+  sequencer so new items hit "not ready" (pill goes yellow). Publish once, re-CHECK the
+  chain tip only, fail after `inclusionTimeout` slots.
+- **Confirm from the chain tip, not the publish result.** Cold-start (~40s after any
+  restart) returns "not ready" even when the op later lands → mark `waiting`, confirm from
+  `GET /channel/{id}` (chain truth). Never false-FAIL a cold-start publish.
+
+CAVEAT: per-item channels are NOT on-chain discoverable from one public channel (would need
+an accumulating index channel, which hits the same extension wall). Fine for the demo /
+individually-linkable items; on-chain discovery needs a persistent live sequencer.
+
+The `checkpoint` was an intermediate suspect (commit `b594abc`, per-channel checkpoint) —
+it appeared to fix one landing but the durable fix was per-item + no-republish. Its
+necessity is unverified; don't over-attribute causation from a single flaky landing.
+
 ---
 
 ## Inscription Lifecycle (feat/inscription-lifecycle)
