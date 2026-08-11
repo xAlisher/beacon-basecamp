@@ -1,5 +1,8 @@
 # beacon-basecamp
 
+> This is a personal, experimental hobby project. It is not an official Logos product. Not audited.
+
+
 On-chain CID inscription module for [Logos Basecamp](https://github.com/logos-co/logos-app).
 
 Beacon watches [stash-basecamp](https://github.com/xAlisher/stash-basecamp) for newly uploaded files and inscribes each CID into a dedicated LEZ zone channel — creating a permanent, verifiable on-chain index of everything you've stored.
